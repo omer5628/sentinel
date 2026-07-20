@@ -1,0 +1,16 @@
+project:
+  name: sentinel
+  experiment_name: training-v1
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  epochs: 10
+  random_seed: 42
+model:
+  name: cnn
+  num_classes: 10
+dataset:
+  name: fashion_mnist
+  data_dir: data
+runtime:
+  device: cpu
