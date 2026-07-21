@@ -1,0 +1,15 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.pyo
+
+data/
+tests/
+docs/
+
+.env
+*.log
+clearml.conf
+.clearml.conf

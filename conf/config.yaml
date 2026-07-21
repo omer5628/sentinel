@@ -1,5 +1,5 @@
 project:
-  name: sentinel
+  name: Sentinel
   experiment_name: training-v1
 
 training:
@@ -13,8 +13,10 @@ model:
   num_classes: 10
 
 dataset:
-  name: fashion_mnist
-  data_dir: data
+  project: Sentinel
+  name: mnist
+  version: 1.0.0
+  file_name: mnist.csv
 
 runtime:
   device: cpu
