@@ -9,7 +9,7 @@ def test_training_config_contains_required_fields() -> None:
     config_path = Path("conf/config.yaml")
     cfg = OmegaConf.load(config_path)
 
-    assert cfg.project.name == "sentinel"
+    assert cfg.project.name == "Sentinel"
     assert cfg.training.batch_size > 0
     assert cfg.training.learning_rate > 0
     assert cfg.training.epochs > 0
