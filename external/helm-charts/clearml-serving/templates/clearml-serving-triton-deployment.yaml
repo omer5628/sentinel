@@ -1,0 +1,97 @@
+{{ if .Values.clearml_serving_triton.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations: {}
+  labels:
+    clearml.serving.service: {{ include "clearmlServing.fullname" . }}-triton
+  name: {{ include "clearmlServing.fullname" . }}-triton
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      clearml.serving.service: {{ include "clearmlServing.fullname" . }}-triton
+  strategy: {}
+  template:
+    metadata:
+      annotations: {}
+      labels:
+        clearml.serving.network/clearml-serving-backend: "true"
+        clearml.serving.service: {{ include "clearmlServing.fullname" . }}-triton
+    spec:
+      {{- if .Values.imageCredentials.enabled }}
+      imagePullSecrets:
+      {{- if .Values.imageCredentials.existingSecret }}
+      - name: {{ .Values.imageCredentials.existingSecret }}
+      {{- else }}
+      - name: clearml-registry-key
+      {{- end }}
+      {{- end }}
+      {{ if .Values.clearml_serving_triton.runtimeClassName}}
+      runtimeClassName: {{ .Values.clearml_serving_triton.runtimeClassName }}
+      {{- end}}
+      {{- if or .Values.clearml_serving_triton.additionalConfigs .Values.clearml_serving_triton.existingAdditionalConfigsConfigMap  .Values.clearml_serving_triton.existingAdditionalConfigsSecret }}
+      volumes:
+        - name: additional-config
+          {{- if or .Values.clearml_serving_triton.existingAdditionalConfigsConfigMap }}
+          configMap:
+            name: {{ .Values.clearml_serving_triton.existingAdditionalConfigsConfigMap }}
+          {{- else if or .Values.clearml_serving_triton.existingAdditionalConfigsSecret }}
+          secret:
+            secretName: {{ .Values.clearml_serving_triton.existingAdditionalConfigsSecret }}
+          {{- else if or .Values.clearml_serving_triton.additionalConfigs }}
+          configMap:
+            name: "{{ include "clearmlServing.fullname" . }}-triton-configmap"
+          {{- end }}
+      {{- end }}
+      {{- with .Values.clearml_serving_triton.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.clearml_serving_triton.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - env:
+            - name: CLEARML_API_ACCESS_KEY
+              value: "{{ .Values.clearml.apiAccessKey }}"
+            - name: CLEARML_API_SECRET_KEY
+              value: "{{ .Values.clearml.apiSecretKey }}"
+            - name: CLEARML_API_HOST
+              value: "{{ .Values.clearml.apiHost }}"
+            - name: CLEARML_FILES_HOST
+              value: "{{ .Values.clearml.filesHost }}"
+            - name: CLEARML_WEB_HOST
+              value: "{{ .Values.clearml.webHost }}"
+            - name: CLEARML_SERVING_TASK_ID
+              value: "{{ .Values.clearml.servingTaskId }}"
+            - name: CLEARML_TRITON_POLL_FREQ
+              value: "{{ .Values.clearml_serving_triton.pollFrequencyMinutes }}"
+            - name: CLEARML_TRITON_METRIC_FREQ
+              value: "{{ .Values.clearml_serving_triton.metricFrequencyMinutes }}"
+            {{- if .Values.clearml_serving_triton.extraPythonPackages }}
+            - name: CLEARML_EXTRA_PYTHON_PACKAGES
+              value: '{{ join " " .Values.clearml_serving_triton.extraPythonPackages }}'
+            {{- end }}
+            {{- with .Values.clearml_serving_triton.extraEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          image: "{{ .Values.clearml_serving_triton.image.repository }}:{{ .Values.clearml_serving_triton.image.tag }}"
+          name: {{ include "clearmlServing.fullname" . }}-triton
+          ports:
+            - containerPort: 8001
+          {{- if or .Values.clearml_serving_triton.additionalConfigs .Values.clearml_serving_triton.existingAdditionalConfigsConfigMap  .Values.clearml_serving_triton.existingAdditionalConfigsSecret }}
+          volumeMounts:  
+            - name: additional-config
+              mountPath: /opt/clearml/config
+          {{- end }}
+          resources:
+            {{- toYaml .Values.clearml_serving_triton.resources | nindent 12 }}
+      restartPolicy: Always
+      {{- with .Values.clearml_serving_triton.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{ end }}
+

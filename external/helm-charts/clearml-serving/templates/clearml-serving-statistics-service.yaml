@@ -1,0 +1,16 @@
+{{- if .Values.clearml_serving_statistics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  annotations: {}
+  labels:
+    clearml.serving.service: {{ include "clearmlServing.fullname" . }}-statistics
+  name: {{ include "clearmlServing.fullname" . }}-statistics
+spec:
+  ports:
+    - name: "9999"
+      port: 9999
+      targetPort: 9999
+  selector:
+    clearml.serving.service: {{ include "clearmlServing.fullname" . }}-statistics
+{{- end }}

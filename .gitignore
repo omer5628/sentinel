@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Local Kubernetes secrets
+k8s/raw/01-config/secret-db.yaml
+
 # Environments (uv / virtualenv)
 .venv/
 env/

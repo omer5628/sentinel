@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clearml-serving-config
+  labels:
+    app.kubernetes.io/name: clearml-serving
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: sentinel
+data:
+  CLEARML_API_HOST: "http://host.minikube.internal:8008"
+  CLEARML_FILES_HOST: "http://host.minikube.internal:8081"
+  CLEARML_WEB_HOST: "http://host.minikube.internal:8080"
+  CLEARML_SERVING_TASK_ID: "2b106199de4242dbacc53fc56726c332"
+  CLEARML_LOG_LEVEL: "INFO"

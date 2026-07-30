@@ -12,12 +12,22 @@ import torch
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import Basic, BasicProperties
 from psycopg2.extensions import connection as PostgreSQLConnection
+from pydantic import ValidationError
 from redis import Redis
 
 from sentinel.features import preprocess_image
+from sentinel.schema.v1 import ImageMessageV1
 
 
 QUEUE_NAME = "video_stream"
+
+DEAD_LETTER_EXCHANGE = "sentinel.dlx"
+DEAD_LETTER_QUEUE = "video_stream.dlq"
+DEAD_LETTER_ROUTING_KEY = "video_stream.invalid"
+
+SCHEMA_NAME = "image_message"
+SUPPORTED_SCHEMA_VERSION = "v1"
+
 FEATURE_TTL_SECONDS = 3600
 MODEL_VERSION = "v1"
 
@@ -38,7 +48,7 @@ DEFAULT_POSTGRES_PASSWORD = "sentinel"
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
-    format=("%(asctime)s | %(levelname)s | %(name)s | %(message)s"),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 
 logger = logging.getLogger(__name__)
@@ -127,6 +137,68 @@ def create_postgres_connection() -> PostgreSQLConnection:
     )
 
 
+def load_active_schema_versions() -> frozenset[str]:
+    """Load active image-message schema versions from PostgreSQL."""
+
+    connection = create_postgres_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT schema_version
+                FROM schema_registry
+                WHERE schema_name = %s
+                  AND is_active = TRUE
+                """,
+                (SCHEMA_NAME,),
+            )
+
+            rows = cursor.fetchall()
+
+    finally:
+        connection.close()
+
+    active_versions = frozenset(str(row[0]) for row in rows)
+
+    if not active_versions:
+        raise RuntimeError(
+            f"No active schema versions were found for '{SCHEMA_NAME}'."
+        )
+
+    return active_versions
+
+
+def declare_rabbitmq_topology(channel: BlockingChannel) -> None:
+    """Declare the main queue and its dead-letter infrastructure."""
+
+    channel.exchange_declare(
+        exchange=DEAD_LETTER_EXCHANGE,
+        exchange_type="direct",
+        durable=True,
+    )
+
+    channel.queue_declare(
+        queue=DEAD_LETTER_QUEUE,
+        durable=True,
+    )
+
+    channel.queue_bind(
+        queue=DEAD_LETTER_QUEUE,
+        exchange=DEAD_LETTER_EXCHANGE,
+        routing_key=DEAD_LETTER_ROUTING_KEY,
+    )
+
+    channel.queue_declare(
+        queue=QUEUE_NAME,
+        durable=True,
+        arguments={
+            "x-dead-letter-exchange": DEAD_LETTER_EXCHANGE,
+            "x-dead-letter-routing-key": DEAD_LETTER_ROUTING_KEY,
+        },
+    )
+
+
 class PostgresWriter:
     """Maintain a reusable PostgreSQL connection with reconnection support."""
 
@@ -206,44 +278,62 @@ class PostgresWriter:
         self.connection = None
 
 
-def deserialize_message(body: bytes) -> dict[str, Any]:
-    """Deserialize and validate an incoming RabbitMQ message."""
+def extract_schema_version(body: bytes) -> str:
+    """Extract the schema version from an incoming JSON message."""
 
     try:
-        message = json.loads(body.decode("utf-8"))
+        message: Any = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("Message body is not valid JSON.") from error
 
     if not isinstance(message, dict):
         raise ValueError("Message body must contain a JSON object.")
 
-    required_fields = {
-        "event_id",
-        "image_id",
-        "image_base64",
-    }
+    schema_version = message.get("schema_version")
 
-    missing_fields = required_fields.difference(message)
+    if not isinstance(schema_version, str) or not schema_version:
+        raise ValueError(
+            "Message must contain a non-empty string field named "
+            "'schema_version'."
+        )
 
-    if missing_fields:
-        missing = ", ".join(sorted(missing_fields))
-
-        raise ValueError(f"Message is missing required fields: {missing}")
-
-    return message
+    return schema_version
 
 
-def decode_image(message: dict[str, Any]) -> bytes:
-    """Decode a Base64 image from a RabbitMQ message."""
+def deserialize_message(
+    body: bytes,
+    active_schema_versions: frozenset[str],
+) -> ImageMessageV1:
+    """Select the schema version and validate an incoming message."""
 
-    encoded_image = message["image_base64"]
+    schema_version = extract_schema_version(body)
 
-    if not isinstance(encoded_image, str):
-        raise ValueError("The image_base64 field must be a string.")
+    if schema_version not in active_schema_versions:
+        raise ValueError(
+            f"Schema version '{schema_version}' is not active in "
+            f"the Schema Registry."
+        )
+
+    if schema_version != SUPPORTED_SCHEMA_VERSION:
+        raise ValueError(
+            f"Schema version '{schema_version}' is active but is not "
+            "supported by this Worker version."
+        )
+
+    try:
+        return ImageMessageV1.model_validate_json(body)
+    except ValidationError as error:
+        raise ValueError(
+            f"Message failed the ImageMessageV1 contract: {error}"
+        ) from error
+
+
+def decode_image(message: ImageMessageV1) -> bytes:
+    """Decode a Base64 image from a validated RabbitMQ message."""
 
     try:
         return base64.b64decode(
-            encoded_image,
+            message.image_base64,
             validate=True,
         )
     except (binascii.Error, ValueError) as error:
@@ -277,10 +367,11 @@ def reject_invalid_message(
     delivery_tag: int,
     error: Exception,
 ) -> None:
-    """Reject a permanently invalid message without retrying it."""
+    """Reject an invalid message and route it to the dead-letter queue."""
 
     logger.error(
-        "Rejected invalid message: %s",
+        "Rejected invalid message and routed it to DLQ '%s': %s",
+        DEAD_LETTER_QUEUE,
         error,
     )
 
@@ -315,19 +406,24 @@ def process_message(
     body: bytes,
     redis_client: Redis,
     postgres_writer: PostgresWriter,
+    active_schema_versions: frozenset[str],
 ) -> None:
-    """Process one image message and perform the dual-write."""
+    """Validate and process one image message."""
 
     del properties
 
     delivery_tag = method.delivery_tag
 
     try:
-        message = deserialize_message(body)
+        message = deserialize_message(
+            body=body,
+            active_schema_versions=active_schema_versions,
+        )
+
         raw_image = decode_image(message)
 
-        event_id = str(message["event_id"])
-        image_id = str(message["image_id"])
+        event_id = str(message.event_id)
+        image_id = message.image_id
 
         features = preprocess_image(raw_image)
 
@@ -347,8 +443,6 @@ def process_message(
         )
         return
 
-    # Redis is required for the Online Hot Path.
-    # If this write fails, retry the entire event.
     try:
         write_to_redis(
             redis_client=redis_client,
@@ -372,8 +466,6 @@ def process_message(
 
     postgres_written = True
 
-    # PostgreSQL belongs to the Offline Cold Path.
-    # Its failure must not block Redis or the Serving API.
     try:
         postgres_writer.write(
             event_id=event_id,
@@ -393,7 +485,6 @@ def process_message(
             error,
         )
 
-    # Redis succeeded, so acknowledge the RabbitMQ message.
     channel.basic_ack(
         delivery_tag=delivery_tag,
     )
@@ -416,6 +507,32 @@ def process_message(
 def run_worker() -> None:
     """Consume images and write features to Redis and PostgreSQL."""
 
+    logger.info(
+        "Loading active schema versions for '%s' from PostgreSQL.",
+        SCHEMA_NAME,
+    )
+
+    try:
+        active_schema_versions = load_active_schema_versions()
+    except (psycopg2.Error, RuntimeError) as error:
+        logger.critical(
+            "Worker cannot start because the Schema Registry is unavailable "
+            "or has no active schemas: %s",
+            error,
+        )
+        raise
+
+    logger.info(
+        "Loaded active schema versions: %s",
+        ", ".join(sorted(active_schema_versions)),
+    )
+
+    if SUPPORTED_SCHEMA_VERSION not in active_schema_versions:
+        raise RuntimeError(
+            f"Required schema version '{SUPPORTED_SCHEMA_VERSION}' "
+            "is not active."
+        )
+
     logger.info("Connecting to Redis.")
     redis_client = create_redis_client()
 
@@ -426,7 +543,7 @@ def run_worker() -> None:
         logger.info("Connected to PostgreSQL.")
     except psycopg2.Error as error:
         logger.error(
-            "PostgreSQL is unavailable during startup. "
+            "PostgreSQL is unavailable after schema initialization. "
             "The Worker will continue in partial failure mode: %s",
             error,
         )
@@ -436,10 +553,7 @@ def run_worker() -> None:
 
     channel = rabbitmq_connection.channel()
 
-    channel.queue_declare(
-        queue=QUEUE_NAME,
-        durable=True,
-    )
+    declare_rabbitmq_topology(channel)
 
     channel.basic_qos(
         prefetch_count=1,
@@ -458,6 +572,7 @@ def run_worker() -> None:
             body=body,
             redis_client=redis_client,
             postgres_writer=postgres_writer,
+            active_schema_versions=active_schema_versions,
         )
 
     channel.basic_consume(

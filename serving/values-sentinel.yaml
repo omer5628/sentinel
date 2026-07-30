@@ -1,0 +1,66 @@
+clearml:
+  apiHost: "http://host.minikube.internal:8008"
+  filesHost: "http://host.minikube.internal:8081"
+  webHost: "http://host.minikube.internal:8080"
+  servingTaskId: "2b106199de4242dbacc53fc56726c332"
+  defaultBaseServeUrl: "http://clearml-serving-inference:8080/serve"
+  kafkaServeUrl: ""
+
+clearml_serving_inference:
+  image:
+    repository: "allegroai/clearml-serving-inference"
+    tag: "1.3.0"
+
+  pollFrequencyMinutes: "0.25"
+
+
+  autoscaling:
+    enabled: false
+
+  ingress:
+    enabled: false
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+clearml_serving_triton:
+  enabled: true
+
+  image:
+    repository: "allegroai/clearml-serving-triton"
+    tag: "1.3.0"
+
+  pollFrequencyMinutes: "0.25"
+  metricFrequencyMinutes: "1.0"
+
+
+  autoscaling:
+    enabled: false
+
+  ingress:
+    enabled: false
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+clearml_serving_statistics:
+  enabled: false
+
+kafka:
+  enabled: false
+
+prometheus:
+  enabled: false
+
+grafana:
+  enabled: false

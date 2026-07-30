@@ -5,7 +5,7 @@ import hydra
 import numpy as np
 import pandas as pd
 import torch
-from clearml import Dataset, Task
+from clearml import Dataset, OutputModel, Task
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from torch import Tensor
@@ -19,19 +19,38 @@ from sentinel.model import MNISTClassifier
 
 IMAGE_WIDTH = 28
 IMAGE_HEIGHT = 28
-MODEL_OUTPUT_PATH = Path("artifacts/model.pt")
+
+MODEL_FRAMEWORK = "PyTorch"
+
+CLASS_LABELS = {
+    "0": 0,
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+}
 
 
 def row_to_image_bytes(pixel_values: np.ndarray) -> bytes:
     """Convert one MNIST pixel row into grayscale PNG bytes."""
 
     if pixel_values.size != IMAGE_WIDTH * IMAGE_HEIGHT:
-        raise ValueError(f"Expected 784 pixels, received {pixel_values.size}.")
+        raise ValueError(
+            f"Expected 784 pixels, received {pixel_values.size}."
+        )
 
-    image_array = pixel_values.astype(np.uint8).reshape(
+    image_array = pixel_values.astype(
+        np.uint8
+    ).reshape(
         IMAGE_HEIGHT,
         IMAGE_WIDTH,
     )
+
     image = Image.fromarray(image_array)
 
     image_buffer = BytesIO()
@@ -40,45 +59,73 @@ def row_to_image_bytes(pixel_values: np.ndarray) -> bytes:
     return image_buffer.getvalue()
 
 
-def load_tensor_dataset(dataset_file: Path) -> TensorDataset:
+def load_tensor_dataset(
+    dataset_file: Path,
+) -> TensorDataset:
     """Load MNIST CSV data using the shared preprocessing function."""
 
     dataframe = pd.read_csv(dataset_file)
 
     if dataframe.empty:
-        raise ValueError("The MNIST dataset is empty.")
+        raise ValueError(
+            "The MNIST dataset is empty."
+        )
 
     label_column = next(
-        (column for column in dataframe.columns if column.lower() == "label"),
+        (
+            column
+            for column in dataframe.columns
+            if column.lower() == "label"
+        ),
         None,
     )
 
     if label_column is None:
-        raise ValueError("The MNIST dataset does not contain a label column.")
+        raise ValueError(
+            "The MNIST dataset does not contain a label column."
+        )
 
     labels = torch.tensor(
-        dataframe[label_column].to_numpy(dtype=np.int64),
+        dataframe[label_column].to_numpy(
+            dtype=np.int64
+        ),
         dtype=torch.long,
     )
 
-    pixel_dataframe = dataframe.drop(columns=[label_column])
-    pixel_matrix = pixel_dataframe.to_numpy(dtype=np.uint8)
+    pixel_dataframe = dataframe.drop(
+        columns=[label_column]
+    )
+    pixel_matrix = pixel_dataframe.to_numpy(
+        dtype=np.uint8
+    )
 
     if pixel_matrix.shape[1] != IMAGE_WIDTH * IMAGE_HEIGHT:
         raise ValueError(
-            f"Expected 784 pixel columns, received {pixel_matrix.shape[1]}."
+            f"Expected 784 pixel columns, "
+            f"received {pixel_matrix.shape[1]}."
         )
 
     processed_images: list[Tensor] = []
 
     for pixel_values in pixel_matrix:
-        image_bytes = row_to_image_bytes(pixel_values)
-        image_tensor = preprocess_image(image_bytes)
-        processed_images.append(image_tensor.squeeze(0))
+        image_bytes = row_to_image_bytes(
+            pixel_values
+        )
+        image_tensor = preprocess_image(
+            image_bytes
+        )
+        processed_images.append(
+            image_tensor.squeeze(0)
+        )
 
-    images = torch.stack(processed_images)
+    images = torch.stack(
+        processed_images
+    )
 
-    return TensorDataset(images, labels)
+    return TensorDataset(
+        images,
+        labels,
+    )
 
 
 def create_data_loaders(
@@ -90,16 +137,27 @@ def create_data_loaders(
     """Split the dataset and create training and validation loaders."""
 
     if not 0.0 < validation_ratio < 1.0:
-        raise ValueError("validation_ratio must be between 0 and 1.")
+        raise ValueError(
+            "validation_ratio must be between 0 and 1."
+        )
 
-    validation_size = int(len(dataset) * validation_ratio)
-    training_size = len(dataset) - validation_size
+    validation_size = int(
+        len(dataset) * validation_ratio
+    )
+    training_size = (
+        len(dataset) - validation_size
+    )
 
-    generator = torch.Generator().manual_seed(random_seed)
+    generator = torch.Generator().manual_seed(
+        random_seed
+    )
 
     training_dataset, validation_dataset = random_split(
         dataset,
-        lengths=[training_size, validation_size],
+        lengths=[
+            training_size,
+            validation_size,
+        ],
         generator=generator,
     )
 
@@ -115,7 +173,10 @@ def create_data_loaders(
         shuffle=False,
     )
 
-    return training_loader, validation_loader
+    return (
+        training_loader,
+        validation_loader,
+    )
 
 
 def train_one_epoch(
@@ -140,18 +201,30 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         logits = model(images)
-        loss = loss_function(logits, labels)
+        loss = loss_function(
+            logits,
+            labels,
+        )
 
         loss.backward()
         optimizer.step()
 
         batch_size = labels.size(0)
-        total_loss += loss.item() * batch_size
-        correct_predictions += (logits.argmax(dim=1) == labels).sum().item()
+
+        total_loss += (
+            loss.item() * batch_size
+        )
+        correct_predictions += (
+            logits.argmax(dim=1) == labels
+        ).sum().item()
         total_samples += batch_size
 
-    average_loss = total_loss / total_samples
-    accuracy = correct_predictions / total_samples
+    average_loss = (
+        total_loss / total_samples
+    )
+    accuracy = (
+        correct_predictions / total_samples
+    )
 
     return average_loss, accuracy
 
@@ -176,20 +249,35 @@ def evaluate(
             labels = labels.to(device)
 
             logits = model(images)
-            loss = loss_function(logits, labels)
+            loss = loss_function(
+                logits,
+                labels,
+            )
 
             batch_size = labels.size(0)
-            total_loss += loss.item() * batch_size
-            correct_predictions += (logits.argmax(dim=1) == labels).sum().item()
+
+            total_loss += (
+                loss.item() * batch_size
+            )
+            correct_predictions += (
+                logits.argmax(dim=1) == labels
+            ).sum().item()
             total_samples += batch_size
 
-    average_loss = total_loss / total_samples
-    accuracy = correct_predictions / total_samples
+    average_loss = (
+        total_loss / total_samples
+    )
+    accuracy = (
+        correct_predictions / total_samples
+    )
 
     return average_loss, accuracy
 
 
-def save_torchscript_model(model: Module, output_path: Path) -> None:
+def save_torchscript_model(
+    model: Module,
+    output_path: Path,
+) -> None:
     """Export the trained model as TorchScript."""
 
     output_path.parent.mkdir(
@@ -200,8 +288,53 @@ def save_torchscript_model(model: Module, output_path: Path) -> None:
     model = model.to("cpu")
     model.eval()
 
-    scripted_model = torch.jit.script(model)
-    scripted_model.save(str(output_path))
+    scripted_model = torch.jit.script(
+        model
+    )
+    scripted_model.save(
+        str(output_path)
+    )
+
+
+def upload_model_to_clearml(
+    task: Task,
+    model_path: Path,
+    model_name: str,
+    model_version: str,
+) -> OutputModel:
+    """Upload and register the TorchScript model in ClearML."""
+
+    if not model_path.is_file():
+        raise FileNotFoundError(
+            "Model file was not found before upload: "
+            f"{model_path}"
+        )
+
+    output_model = OutputModel(
+        task=task,
+        name=model_name,
+        framework=MODEL_FRAMEWORK,
+        tags=[
+            model_version,
+            "mnist",
+            "torchscript",
+            "serving",
+        ],
+        comment=(
+            f"TorchScript MNIST classifier version "
+            f"{model_version} prepared for "
+            "ClearML Serving deployment."
+        ),
+        label_enumeration=CLASS_LABELS,
+    )
+
+    output_model.update_weights(
+        weights_filename=str(
+            model_path.resolve()
+        ),
+    )
+
+    return output_model
 
 
 @hydra.main(
@@ -210,21 +343,30 @@ def save_torchscript_model(model: Module, output_path: Path) -> None:
     config_name="config",
 )
 def main(cfg: DictConfig) -> None:
-    """Train and export the Sentinel MNIST classifier."""
+    """Train, export, and register the Sentinel MNIST classifier."""
 
-    torch.manual_seed(cfg.training.random_seed)
-    np.random.seed(cfg.training.random_seed)
+    torch.manual_seed(
+        cfg.training.random_seed
+    )
+    np.random.seed(
+        cfg.training.random_seed
+    )
 
     task = Task.init(
         project_name=cfg.project.name,
         task_name=cfg.project.experiment_name,
+        output_uri=True,
+        reuse_last_task_id=False,
+        auto_connect_frameworks=False,
     )
 
     resolved_config = OmegaConf.to_container(
         cfg,
         resolve=True,
     )
-    task.connect(resolved_config)
+    task.connect(
+        resolved_config
+    )
 
     logger = task.get_logger()
 
@@ -235,21 +377,33 @@ def main(cfg: DictConfig) -> None:
         alias="training_dataset",
     )
 
-    dataset_root = Path(dataset.get_local_copy())
-    dataset_file = dataset_root / cfg.dataset.file_name
+    dataset_root = Path(
+        dataset.get_local_copy()
+    )
+    dataset_file = (
+        dataset_root
+        / str(cfg.dataset.file_name)
+    )
 
     if not dataset_file.is_file():
         raise FileNotFoundError(
-            f"Dataset file was not found in ClearML: {dataset_file}"
+            "Dataset file was not found in ClearML: "
+            f"{dataset_file}"
         )
 
     print("Loaded training configuration:")
-    print(OmegaConf.to_yaml(cfg))
+    print(
+        OmegaConf.to_yaml(cfg)
+    )
     print(f"Dataset ID: {dataset.id}")
     print(f"Dataset file: {dataset_file}")
-    print("Preparing tensors with shared preprocessing...")
+    print(
+        "Preparing tensors with shared preprocessing..."
+    )
 
-    tensor_dataset = load_tensor_dataset(dataset_file)
+    tensor_dataset = load_tensor_dataset(
+        dataset_file
+    )
 
     training_loader, validation_loader = create_data_loaders(
         dataset=tensor_dataset,
@@ -258,27 +412,50 @@ def main(cfg: DictConfig) -> None:
         random_seed=cfg.training.random_seed,
     )
 
-    requested_device = str(cfg.runtime.device)
+    requested_device = str(
+        cfg.runtime.device
+    )
 
-    if requested_device == "cuda" and not torch.cuda.is_available():
-        print("CUDA is unavailable. Falling back to CPU.")
+    if (
+        requested_device == "cuda"
+        and not torch.cuda.is_available()
+    ):
+        print(
+            "CUDA is unavailable. Falling back to CPU."
+        )
         requested_device = "cpu"
 
-    device = torch.device(requested_device)
+    device = torch.device(
+        requested_device
+    )
 
     model = MNISTClassifier(
         num_classes=cfg.model.num_classes,
     ).to(device)
 
     loss_function = CrossEntropyLoss()
+
     optimizer = Adam(
         model.parameters(),
         lr=cfg.training.learning_rate,
     )
 
+    model_output_path = Path(
+        str(cfg.model.output_path)
+    )
+    model_registry_name = str(
+        cfg.model.registry_name
+    )
+    model_version = str(
+        cfg.model.version
+    )
+
     print(f"Training on device: {device}")
 
-    for epoch in range(1, cfg.training.epochs + 1):
+    for epoch in range(
+        1,
+        cfg.training.epochs + 1,
+    ):
         training_loss, training_accuracy = train_one_epoch(
             model=model,
             data_loader=training_loader,
@@ -329,15 +506,38 @@ def main(cfg: DictConfig) -> None:
 
     save_torchscript_model(
         model=model,
-        output_path=MODEL_OUTPUT_PATH,
+        output_path=model_output_path,
     )
 
-    task.upload_artifact(
-        name="torchscript_model",
-        artifact_object=MODEL_OUTPUT_PATH,
+    output_model = upload_model_to_clearml(
+        task=task,
+        model_path=model_output_path,
+        model_name=model_registry_name,
+        model_version=model_version,
     )
 
-    print(f"Model saved successfully: {MODEL_OUTPUT_PATH}")
+    print(
+        f"Model saved locally: "
+        f"{model_output_path}"
+    )
+    print(
+        f"ClearML model name: "
+        f"{output_model.name}"
+    )
+    print(
+        f"ClearML model version: "
+        f"{model_version}"
+    )
+    print(
+        f"ClearML model ID: "
+        f"{output_model.id}"
+    )
+    print(
+        "Model uploaded successfully "
+        "to the ClearML model registry."
+    )
+
+    task.close()
 
 
 if __name__ == "__main__":

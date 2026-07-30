@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-api
+  namespace: default
+  labels:
+    app.kubernetes.io/name: sentinel-api
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 180
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentinel-api
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel-api
+        app.kubernetes.io/component: inference
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: type
+                    operator: In
+                    values:
+                      - serving
+
+      imagePullSecrets:
+        - name: private-registry-auth
+
+      containers:
+        - name: api
+          image: omer5628/sentinel-api:v1.2
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+
+          env:
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: LOG_LEVEL
+
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: REDIS_HOST
+
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: REDIS_PORT
+
+            - name: TRITON_GRPC_URL
+              value: "clearml-serving-triton:8001"
+
+            - name: TRITON_MODEL_NAME
+              value: "sentinel-mnist_1"
+
+            - name: TRITON_MODEL_VERSION
+              value: "1"
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

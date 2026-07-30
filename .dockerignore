@@ -3,13 +3,23 @@
 .venv
 __pycache__
 *.pyc
-*.pyo
+.pytest_cache
+.ruff_cache
+.pyright
+.mypy_cache
 
-data/
-tests/
-docs/
+data
+outputs
+artifacts/*
+!artifacts/model.pt
+
+k8s
+docs
+tests
 
 .env
+.env.*
 *.log
-clearml.conf
-.clearml.conf
+
+Dockerfile.*
+docker-compose.yaml

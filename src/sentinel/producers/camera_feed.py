@@ -14,7 +14,19 @@ from clearml import Dataset
 from PIL import Image
 
 
+from sentinel.consumers.worker import DEAD_LETTER_EXCHANGE
+
+
 QUEUE_NAME = "video_stream"
+SCHEMA_VERSION = "v1"
+
+EAD_LETTER_EXCHANGE = "sentinel.dlx"
+DEAD_LETTER_QUEUE = "video_stream.dlq"
+DEAD_LETTER_ROUTING_KEY = "video_stream.invalid"
+
+BREAK_SCHEMA_ENV_VAR = "BREAK_MESSAGE_SCHEMA"
+BREAK_IMAGE_QUALITY_ENV_VAR = "BREAK_IMAGE_QUALITY"
+
 FRAMES_PER_SECOND = 5
 FRAME_INTERVAL_SECONDS = 1 / FRAMES_PER_SECOND
 
@@ -78,13 +90,19 @@ def row_to_png_bytes(
 ) -> bytes:
     """Convert one MNIST CSV row into grayscale PNG bytes."""
 
-    pixel_values = dataframe.iloc[row_index][pixel_columns].to_numpy(dtype="uint8")
+    pixel_values = dataframe.iloc[row_index][pixel_columns].to_numpy(
+        dtype="uint8"
+    )
 
     image_array = pixel_values.reshape(
         IMAGE_HEIGHT,
         IMAGE_WIDTH,
     )
+
     image = Image.fromarray(image_array)
+
+    if os.getenv(BREAK_IMAGE_QUALITY_ENV_VAR, "false").lower() == "true":
+        image = image.resize((32, 32))
 
     image_buffer = BytesIO()
     image.save(image_buffer, format="PNG")
@@ -98,10 +116,16 @@ def create_message(image_bytes: bytes, row_index: int) -> bytes:
     event_id = str(uuid4())
     image_id = f"mnist-{row_index}-{event_id}"
 
+    timestamp: float | str = time.time()
+
+    if os.getenv(BREAK_SCHEMA_ENV_VAR, "false").lower() == "true":
+        timestamp = str(timestamp)
+
     message: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
         "event_id": event_id,
         "image_id": image_id,
-        "timestamp": time.time(),
+        "timestamp": timestamp,
         "image_format": "png",
         "image_base64": base64.b64encode(image_bytes).decode("ascii"),
     }
@@ -157,10 +181,33 @@ def run_producer() -> None:
     channel = connection.channel()
 
     print(f"Declaring queue '{QUEUE_NAME}'...", flush=True)
+    channel.exchange_declare(
+        exchange=DEAD_LETTER_EXCHANGE,
+        exchange_type="direct",
+        durable=True,
+    )
+
+    channel.queue_declare(
+        queue=DEAD_LETTER_QUEUE,
+        durable=True,
+    )
+
+    channel.queue_bind(
+        queue=DEAD_LETTER_QUEUE,
+        exchange=DEAD_LETTER_EXCHANGE,
+        routing_key=DEAD_LETTER_ROUTING_KEY,
+    )
+
     channel.queue_declare(
         queue=QUEUE_NAME,
         durable=True,
-    )
+        arguments={
+            "x-dead-letter-exchange": DEAD_LETTER_EXCHANGE,
+            "x-dead-letter-routing-key": DEAD_LETTER_ROUTING_KEY,
+        },
+    ),
+
+    print("RabbitMQ topology declared successfully.", flush=True)
 
     print(
         f"Producer started. Publishing up to "

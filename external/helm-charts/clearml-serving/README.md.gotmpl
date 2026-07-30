@@ -1,0 +1,46 @@
+# ClearML Kubernetes Serving
+{{ template "chart.deprecationWarning" . }}
+
+{{ template "chart.badgesSection" . }}
+
+{{ template "chart.description" . }}
+
+{{ template "chart.homepageLine" . }}
+
+{{ template "chart.maintainersSection" . }}
+
+## Introduction
+
+The **clearml-serving** is the Kubernetes serving for for [ClearML](https://github.com/clearml/clearml-serving).
+It allows you to serve models on a Kubernetes cluster.
+
+## Add to local Helm repository
+
+To add this chart to your local Helm repository:
+
+```
+helm repo add clearml https://clearml.github.io/clearml-helm-charts
+```
+
+# Upgrading Chart
+
+## Upgrades/ Values upgrades
+
+Updating to latest version of this chart can be done in two steps:
+
+```
+helm repo update
+helm upgrade clearml-serving clearml/clearml-serving
+```
+
+Changing values on existing installation can be done with:
+
+```
+helm upgrade clearml-serving clearml/clearml-serving --version <CURRENT CHART VERSION> -f custom_values.yaml
+```
+
+{{ template "chart.sourcesSection" . }}
+
+{{ template "chart.requirementsSection" . }}
+
+{{ template "chart.valuesSection" . }}

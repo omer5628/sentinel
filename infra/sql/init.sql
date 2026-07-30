@@ -18,6 +18,7 @@ CREATE INDEX IF NOT EXISTS idx_feature_log_unlabeled
     ON feature_log (timestamp)
     WHERE label IS NULL;
 
+
 CREATE TABLE IF NOT EXISTS batch_predictions (
     prediction_id UUID PRIMARY KEY,
     image_id VARCHAR(255) NOT NULL,
@@ -38,3 +39,67 @@ CREATE INDEX IF NOT EXISTS idx_batch_predictions_image_id
 
 CREATE INDEX IF NOT EXISTS idx_batch_predictions_created_at
     ON batch_predictions (created_at);
+
+
+CREATE TABLE IF NOT EXISTS schema_registry (
+    schema_name VARCHAR(100) NOT NULL,
+    schema_version VARCHAR(20) NOT NULL,
+    schema_definition JSONB NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (schema_name, schema_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_schema_registry_active
+    ON schema_registry (schema_name, is_active);
+
+
+INSERT INTO schema_registry (
+    schema_name,
+    schema_version,
+    schema_definition,
+    is_active
+)
+VALUES (
+    'image_message',
+    'v1',
+    $schema$
+    {
+        "title": "ImageMessageV1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "event_id",
+            "image_id",
+            "timestamp",
+            "image_format",
+            "image_base64"
+        ],
+        "properties": {
+            "event_id": {
+                "type": "string",
+                "format": "uuid"
+            },
+            "image_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+            },
+            "timestamp": {
+                "type": "number",
+                "exclusiveMinimum": 0
+            },
+            "image_format": {
+                "type": "string",
+                "const": "png"
+            },
+            "image_base64": {
+                "type": "string",
+                "minLength": 1
+            }
+        }
+    }
+    $schema$::jsonb,
+    TRUE
+)
+ON CONFLICT (schema_name, schema_version) DO NOTHING;

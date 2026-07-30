@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations: {}
+  labels:
+    clearml.serving.service: {{ include "clearmlServing.fullname" . }}-inference
+  name: {{ include "clearmlServing.fullname" . }}-inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      clearml.serving.service: {{ include "clearmlServing.fullname" . }}-inference
+  strategy: {}
+  template:
+    metadata:
+      annotations: {}
+      labels:
+        clearml.serving.network/clearml-serving-backend: "true"
+        clearml.serving.service: {{ include "clearmlServing.fullname" . }}-inference
+    spec:
+      {{- if .Values.imageCredentials.enabled }}
+      imagePullSecrets:
+      {{- if .Values.imageCredentials.existingSecret }}
+      - name: {{ .Values.imageCredentials.existingSecret }}
+      {{- else }}
+      - name: clearml-registry-key
+      {{- end }}
+      {{- end }}
+      {{- if or .Values.clearml_serving_inference.additionalConfigs .Values.clearml_serving_inference.existingAdditionalConfigsConfigMap  .Values.clearml_serving_inference.existingAdditionalConfigsSecret }}
+      volumes:
+        - name: additional-config
+          {{- if or .Values.clearml_serving_inference.existingAdditionalConfigsConfigMap }}
+          configMap:
+            name: {{ .Values.clearml_serving_inference.existingAdditionalConfigsConfigMap }}
+          {{- else if or .Values.clearml_serving_inference.existingAdditionalConfigsSecret }}
+          secret:
+            secretName: {{ .Values.clearml_serving_inference.existingAdditionalConfigsSecret }}
+          {{- else if or .Values.clearml_serving_inference.additionalConfigs }}
+          configMap:
+            name: "{{ include "clearmlServing.fullname" . }}-inference-configmap"
+          {{- end }}
+      {{- end }}
+      {{- with .Values.clearml_serving_inference.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - env:
+            - name: CLEARML_API_ACCESS_KEY
+              value: "{{ .Values.clearml.apiAccessKey }}"
+            - name: CLEARML_API_SECRET_KEY
+              value: "{{ .Values.clearml.apiSecretKey }}"
+            - name: CLEARML_API_HOST
+              value: "{{ .Values.clearml.apiHost }}"
+            - name: CLEARML_FILES_HOST
+              value: "{{ .Values.clearml.filesHost }}"
+            - name: CLEARML_WEB_HOST
+              value: "{{ .Values.clearml.webHost }}"
+            {{- if .Values.clearml_serving_statistics.enabled }}
+            - name: CLEARML_DEFAULT_KAFKA_SERVE_URL
+              {{- if .Values.clearml.kafkaServeUrl }}
+              value: {{ .Values.clearml.kafkaServeUrl }}
+              {{- else }}
+              value: {{ include "clearmlServing.fullname" . }}-kafka:9092
+              {{- end }}
+            {{- end }}
+            - name: CLEARML_SERVING_POLL_FREQ
+              value: "{{ .Values.clearml_serving_inference.pollFrequencyMinutes }}"
+            - name: CLEARML_DEFAULT_BASE_SERVE_URL
+              value: "{{ .Values.clearml.defaultBaseServeUrl }}"
+            - name: CLEARML_DEFAULT_TRITON_GRPC_ADDR
+            {{- if .Values.clearml_serving_triton.enabled }}
+              value: "{{ include "clearmlServing.fullname" . }}-triton:8001"
+            {{- else }}
+              value: ""
+            {{- end }}
+            - name: CLEARML_SERVING_NUM_PROCESS
+              value: "2"
+            - name: CLEARML_SERVING_PORT
+              value: "8080"
+            - name: CLEARML_SERVING_TASK_ID
+              value: "{{ .Values.clearml.servingTaskId }}"
+            - name: CLEARML_USE_GUNICORN
+              value: "true"
+            {{- if .Values.clearml_serving_inference.extraPythonPackages }}
+            - name: CLEARML_EXTRA_PYTHON_PACKAGES
+              value: '{{ join " " .Values.clearml_serving_inference.extraPythonPackages }}'
+            {{- end }}
+            {{- with .Values.clearml_serving_inference.extraEnvironment }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          image: "{{ .Values.clearml_serving_inference.image.repository }}:{{ .Values.clearml_serving_inference.image.tag }}"
+          name: {{ include "clearmlServing.fullname" . }}-inference
+          ports:
+            - containerPort: 8080
+          {{- if or .Values.clearml_serving_inference.additionalConfigs .Values.clearml_serving_inference.existingAdditionalConfigsConfigMap  .Values.clearml_serving_inference.existingAdditionalConfigsSecret }}
+          volumeMounts:  
+            - name: additional-config
+              mountPath: /opt/clearml/config
+          {{- end }}
+          {{- with .Values.clearml_serving_inference.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.clearml_serving_inference.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.clearml_serving_inference.resources | nindent 12 }}
+      restartPolicy: Always
