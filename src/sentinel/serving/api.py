@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -16,6 +18,11 @@ DEFAULT_REDIS_PORT = 6379
 
 FEATURE_SHAPE = (1, 1, 28, 28)
 FEATURE_DTYPE = np.float32
+
+MODEL_V1_NAME = "sentinel-mnist_1"
+MODEL_V2_NAME = "sentinel-mnist_2"
+
+logger = logging.getLogger("uvicorn.error")
 
 CLASS_NAMES = {
     0: "0",
@@ -45,7 +52,8 @@ class ApplicationState:
     """Store shared application resources."""
 
     redis_client: Redis | None = None
-    inference_client: TritonInferenceClient | None = None
+    inference_client_v1: TritonInferenceClient | None = None
+    inference_client_v2: TritonInferenceClient | None = None
 
 
 application_state = ApplicationState()
@@ -73,16 +81,20 @@ def create_redis_client() -> Redis:
     return client
 
 
-def create_inference_client() -> TritonInferenceClient:
-    """Create and verify the Triton inference client."""
+def create_inference_client(
+    model_name: str,
+) -> TritonInferenceClient:
+    """Create and verify a Triton inference client."""
 
-    client = TritonInferenceClient()
+    client = TritonInferenceClient(
+        model_name=model_name,
+    )
 
     if not client.is_ready():
         client.close()
 
         raise RuntimeError(
-            "Triton or the configured model is not ready."
+            f"Triton model '{model_name}' is not ready."
         )
 
     return client
@@ -113,6 +125,57 @@ def deserialize_feature(
     ).copy()
 
 
+def run_shadow_inference(
+    feature_array: np.ndarray,
+) -> None:
+    """Run V2 shadow inference without affecting the user response."""
+
+    inference_client_v2 = application_state.inference_client_v2
+
+    if inference_client_v2 is None:
+        logger.error(
+            "shadow_model=v2 status=unavailable"
+        )
+        return
+
+    start_time = time.perf_counter()
+
+    try:
+        prediction_result = inference_client_v2.predict(
+            feature_array
+        )
+    except (
+        RuntimeError,
+        ValueError,
+    ) as error:
+        latency_ms = (
+            time.perf_counter() - start_time
+        ) * 1000
+
+        logger.error(
+            "shadow_model=v2 status=error latency_ms=%.3f error=%s",
+            latency_ms,
+            error,
+        )
+
+        return
+
+    latency_ms = (
+        time.perf_counter() - start_time
+    ) * 1000
+
+    logger.info(
+        (
+            "shadow_model=v2 status=success "
+            "latency_ms=%.3f predicted_class=%d "
+            "confidence=%.6f"
+        ),
+        latency_ms,
+        prediction_result.predicted_class,
+        prediction_result.confidence,
+    )
+
+
 @asynccontextmanager
 async def lifespan(
     app: FastAPI,
@@ -122,24 +185,38 @@ async def lifespan(
     del app
 
     application_state.redis_client = create_redis_client()
-    application_state.inference_client = create_inference_client()
+
+    application_state.inference_client_v1 = (
+        create_inference_client(
+            model_name=MODEL_V1_NAME,
+        )
+    )
+
+    application_state.inference_client_v2 = (
+        create_inference_client(
+            model_name=MODEL_V2_NAME,
+        )
+    )
 
     yield
 
     if application_state.redis_client is not None:
         application_state.redis_client.close()
 
-    if application_state.inference_client is not None:
-        application_state.inference_client.close()
+    if application_state.inference_client_v1 is not None:
+        application_state.inference_client_v1.close()
+
+    if application_state.inference_client_v2 is not None:
+        application_state.inference_client_v2.close()
 
 
 app = FastAPI(
     title="Sentinel Serving API",
     description=(
-        "Thin real-time MNIST API backed by "
-        "ClearML Serving and Triton."
+        "Thin real-time MNIST API with "
+        "V1 production inference and V2 shadow inference."
     ),
-    version="2.0.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
@@ -156,9 +233,14 @@ def health() -> dict[str, str]:
     """Return the readiness status of API dependencies."""
 
     redis_client = application_state.redis_client
-    inference_client = application_state.inference_client
+    inference_client_v1 = application_state.inference_client_v1
+    inference_client_v2 = application_state.inference_client_v2
 
-    if redis_client is None or inference_client is None:
+    if (
+        redis_client is None
+        or inference_client_v1 is None
+        or inference_client_v2 is None
+    ):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="API dependencies are not initialized.",
@@ -172,10 +254,16 @@ def health() -> dict[str, str]:
             detail="Redis is unavailable.",
         ) from error
 
-    if not inference_client.is_ready():
+    if not inference_client_v1.is_ready():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Triton inference service is unavailable.",
+            detail="Triton model V1 is unavailable.",
+        )
+
+    if not inference_client_v2.is_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Triton model V2 is unavailable.",
         )
 
     return {"status": "healthy"}
@@ -188,12 +276,12 @@ def health() -> dict[str, str]:
 def predict(
     image_id: str,
 ) -> PredictionResponse:
-    """Predict an MNIST class using ClearML Serving and Triton."""
+    """Run V1 inference and mirror the request to V2."""
 
     redis_client = application_state.redis_client
-    inference_client = application_state.inference_client
+    inference_client_v1 = application_state.inference_client_v1
 
-    if redis_client is None or inference_client is None:
+    if redis_client is None or inference_client_v1 is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="API dependencies are not initialized.",
@@ -222,22 +310,47 @@ def predict(
         )
 
     try:
-        feature_array = deserialize_feature(feature_bytes)
-        prediction_result = inference_client.predict(
-            feature_array
+        feature_array = deserialize_feature(
+            feature_bytes
         )
     except ValueError as error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Stored feature has an invalid shape.",
         ) from error
+
+    start_time = time.perf_counter()
+
+    try:
+        prediction_result_v1 = inference_client_v1.predict(
+            feature_array
+        )
     except RuntimeError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Inference service failed.",
+            detail="Primary inference service failed.",
         ) from error
 
-    predicted_class = prediction_result.predicted_class
+    v1_latency_ms = (
+        time.perf_counter() - start_time
+    ) * 1000
+
+    logger.info(
+        (
+            "primary_model=v1 status=success "
+            "latency_ms=%.3f predicted_class=%d "
+            "confidence=%.6f"
+        ),
+        v1_latency_ms,
+        prediction_result_v1.predicted_class,
+        prediction_result_v1.confidence,
+    )
+
+    run_shadow_inference(
+        feature_array=feature_array,
+    )
+
+    predicted_class = prediction_result_v1.predicted_class
 
     predicted_label = CLASS_NAMES.get(
         predicted_class
@@ -253,6 +366,6 @@ def predict(
         image_id=image_id,
         predicted_class=predicted_class,
         predicted_label=predicted_label,
-        confidence=prediction_result.confidence,
-        model_version="v1-triton",
+        confidence=prediction_result_v1.confidence,
+        model_version="v1",
     )

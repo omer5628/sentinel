@@ -33,6 +33,7 @@ packages = ["src/sentinel"]
 
 [dependency-groups]
 dev = [
+    "matplotlib>=3.10.9",
     "pre-commit",
     "pyright",
     "pytest",

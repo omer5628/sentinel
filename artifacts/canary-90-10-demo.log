@@ -1,0 +1,11 @@
+
+Canary 90/10 demonstration
+----------------------------------------
+Total requests: 100
+Successful requests: 100
+Failed requests: 0
+V1 requests: 86
+V2 requests: 14
+Unknown responses: 0
+V1 percentage: 86.0%
+V2 percentage: 14.0%

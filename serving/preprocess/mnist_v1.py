@@ -13,6 +13,13 @@ EXPECTED_SHAPE = (
     IMAGE_WIDTH,
 )
 
+BATCHED_SHAPE = (
+    1,
+    IMAGE_CHANNELS,
+    IMAGE_HEIGHT,
+    IMAGE_WIDTH,
+)
+
 MODEL_VERSION = "v1"
 
 
@@ -25,7 +32,7 @@ class Preprocess:
         state: dict,
         collect_custom_statistics_fn: Any = None,
     ) -> np.ndarray:
-        """Convert a JSON request into a float32 MNIST tensor."""
+        """Convert a JSON request into a batched float32 MNIST tensor."""
 
         del state
         del collect_custom_statistics_fn
@@ -52,13 +59,20 @@ class Preprocess:
             IMAGE_WIDTH,
         ):
             input_array = input_array.reshape(
-                EXPECTED_SHAPE
+                BATCHED_SHAPE
             )
 
-        if input_array.shape != EXPECTED_SHAPE:
+        elif input_array.shape == EXPECTED_SHAPE:
+            input_array = input_array.reshape(
+                BATCHED_SHAPE
+            )
+
+        elif input_array.shape != BATCHED_SHAPE:
             raise ValueError(
                 "Invalid pixel shape: "
-                f"expected {EXPECTED_SHAPE}, "
+                "expected (28, 28), "
+                "(1, 28, 28), or "
+                "(1, 1, 28, 28), "
                 f"received {input_array.shape}."
             )
 
@@ -106,9 +120,11 @@ class Preprocess:
         shifted_logits = (
             logits - np.max(logits)
         )
+
         exponentials = np.exp(
             shifted_logits
         )
+
         probabilities = (
             exponentials / np.sum(exponentials)
         )
