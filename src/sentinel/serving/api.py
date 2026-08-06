@@ -6,7 +6,21 @@ from typing import AsyncIterator
 
 import numpy as np
 import redis
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Response, status
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+    OTLPSpanExporter,
+)
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import Status, StatusCode
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Histogram,
+    generate_latest,
+)
 from pydantic import BaseModel
 from redis import Redis
 
@@ -16,6 +30,9 @@ from sentinel.serving.inference_client import TritonInferenceClient
 DEFAULT_REDIS_HOST = "localhost"
 DEFAULT_REDIS_PORT = 6379
 
+DEFAULT_OTEL_ENDPOINT = "http://jaeger:4318/v1/traces"
+OTEL_SERVICE_NAME = "sentinel-api"
+
 FEATURE_SHAPE = (1, 1, 28, 28)
 FEATURE_DTYPE = np.float32
 
@@ -23,6 +40,57 @@ MODEL_V1_NAME = "sentinel-mnist_1"
 MODEL_V2_NAME = "sentinel-mnist_2"
 
 logger = logging.getLogger("uvicorn.error")
+
+
+resource = Resource.create(
+    {
+        "service.name": OTEL_SERVICE_NAME,
+    }
+)
+
+tracer_provider = TracerProvider(
+    resource=resource,
+)
+
+otlp_exporter = OTLPSpanExporter(
+    endpoint=os.getenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        DEFAULT_OTEL_ENDPOINT,
+    )
+)
+
+tracer_provider.add_span_processor(
+    BatchSpanProcessor(
+        otlp_exporter,
+    )
+)
+
+trace.set_tracer_provider(
+    tracer_provider
+)
+
+tracer = trace.get_tracer(
+    __name__
+)
+
+
+INFERENCE_REQUESTS = Counter(
+    "inference_requests_total",
+    "Total number of inference requests.",
+    [
+        "model",
+        "status",
+    ],
+)
+
+INFERENCE_LATENCY = Histogram(
+    "inference_latency_seconds",
+    "Inference processing latency in seconds.",
+    [
+        "model",
+    ],
+)
+
 
 CLASS_NAMES = {
     0: "0",
@@ -130,50 +198,138 @@ def run_shadow_inference(
 ) -> None:
     """Run V2 shadow inference without affecting the user response."""
 
-    inference_client_v2 = application_state.inference_client_v2
-
-    if inference_client_v2 is None:
-        logger.error(
-            "shadow_model=v2 status=unavailable"
-        )
-        return
-
-    start_time = time.perf_counter()
-
-    try:
-        prediction_result = inference_client_v2.predict(
-            feature_array
-        )
-    except (
-        RuntimeError,
-        ValueError,
-    ) as error:
-        latency_ms = (
-            time.perf_counter() - start_time
-        ) * 1000
-
-        logger.error(
-            "shadow_model=v2 status=error latency_ms=%.3f error=%s",
-            latency_ms,
-            error,
+    with tracer.start_as_current_span(
+        "v2_shadow_inference"
+    ) as span:
+        span.set_attribute(
+            "ml.model.version",
+            "v2",
         )
 
-        return
+        inference_client_v2 = (
+            application_state.inference_client_v2
+        )
 
-    latency_ms = (
-        time.perf_counter() - start_time
-    ) * 1000
+        if inference_client_v2 is None:
+            INFERENCE_REQUESTS.labels(
+                model="v2",
+                status="unavailable",
+            ).inc()
 
-    logger.info(
-        (
-            "shadow_model=v2 status=success "
-            "latency_ms=%.3f predicted_class=%d "
-            "confidence=%.6f"
-        ),
-        latency_ms,
-        prediction_result.predicted_class,
-        prediction_result.confidence,
-    )
+            span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    "V2 inference client unavailable",
+                )
+            )
+
+            logger.error(
+                "shadow_model=v2 status=unavailable"
+            )
+
+            return
+
+        start_time = time.perf_counter()
+
+        try:
+            prediction_result = (
+                inference_client_v2.predict(
+                    feature_array
+                )
+            )
+
+        except (
+            RuntimeError,
+            ValueError,
+        ) as error:
+            elapsed_seconds = (
+                time.perf_counter()
+                - start_time
+            )
+
+            INFERENCE_LATENCY.labels(
+                model="v2",
+            ).observe(
+                elapsed_seconds
+            )
+
+            INFERENCE_REQUESTS.labels(
+                model="v2",
+                status="error",
+            ).inc()
+
+            span.record_exception(
+                error
+            )
+
+            span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    str(error),
+                )
+            )
+
+            span.set_attribute(
+                "inference.latency_ms",
+                elapsed_seconds * 1000,
+            )
+
+            logger.error(
+                "shadow_model=v2 status=error "
+                "latency_ms=%.3f error=%s",
+                elapsed_seconds * 1000,
+                error,
+            )
+
+            return
+
+        elapsed_seconds = (
+            time.perf_counter()
+            - start_time
+        )
+
+        INFERENCE_LATENCY.labels(
+            model="v2",
+        ).observe(
+            elapsed_seconds
+        )
+
+        INFERENCE_REQUESTS.labels(
+            model="v2",
+            status="success",
+        ).inc()
+
+        span.set_attribute(
+            "inference.latency_ms",
+            elapsed_seconds * 1000,
+        )
+
+        span.set_attribute(
+            "inference.predicted_class",
+            prediction_result.predicted_class,
+        )
+
+        span.set_attribute(
+            "inference.confidence",
+            prediction_result.confidence,
+        )
+
+        span.set_status(
+            Status(
+                StatusCode.OK
+            )
+        )
+
+        logger.info(
+            (
+                "shadow_model=v2 status=success "
+                "latency_ms=%.3f predicted_class=%d "
+                "confidence=%.6f"
+            ),
+            elapsed_seconds * 1000,
+            prediction_result.predicted_class,
+            prediction_result.confidence,
+        )
 
 
 @asynccontextmanager
@@ -209,6 +365,8 @@ async def lifespan(
     if application_state.inference_client_v2 is not None:
         application_state.inference_client_v2.close()
 
+    tracer_provider.shutdown()
+
 
 app = FastAPI(
     title="Sentinel Serving API",
@@ -216,7 +374,7 @@ app = FastAPI(
         "Thin real-time MNIST API with "
         "V1 production inference and V2 shadow inference."
     ),
-    version="2.2.0",
+    version="2.4.0",
     lifespan=lifespan,
 )
 
@@ -269,6 +427,16 @@ def health() -> dict[str, str]:
     return {"status": "healthy"}
 
 
+@app.get("/metrics")
+def metrics() -> Response:
+    """Expose Prometheus metrics."""
+
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
+
 @app.post(
     "/predict/{image_id}",
     response_model=PredictionResponse,
@@ -278,94 +446,294 @@ def predict(
 ) -> PredictionResponse:
     """Run V1 inference and mirror the request to V2."""
 
-    redis_client = application_state.redis_client
-    inference_client_v1 = application_state.inference_client_v1
-
-    if redis_client is None or inference_client_v1 is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="API dependencies are not initialized.",
+    with tracer.start_as_current_span(
+        "predict_request"
+    ) as request_span:
+        request_span.set_attribute(
+            "sentinel.image_id",
+            image_id,
         )
 
-    redis_key = f"feat:{image_id}"
-
-    try:
-        feature_bytes = redis_client.get(redis_key)
-    except redis.RedisError as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Redis is unavailable.",
-        ) from error
-
-    if feature_bytes is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not processed yet",
+        redis_client = application_state.redis_client
+        inference_client_v1 = (
+            application_state.inference_client_v1
         )
 
-    if not isinstance(feature_bytes, bytes):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored feature has an invalid format.",
+        if (
+            redis_client is None
+            or inference_client_v1 is None
+        ):
+            request_span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    "API dependencies not initialized",
+                )
+            )
+
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_503_SERVICE_UNAVAILABLE
+                ),
+                detail=(
+                    "API dependencies are not initialized."
+                ),
+            )
+
+        redis_key = f"feat:{image_id}"
+
+        with tracer.start_as_current_span(
+            "redis_lookup"
+        ) as redis_span:
+            redis_span.set_attribute(
+                "db.system",
+                "redis",
+            )
+
+            redis_span.set_attribute(
+                "redis.key",
+                redis_key,
+            )
+
+            try:
+                feature_bytes = redis_client.get(
+                    redis_key
+                )
+
+            except redis.RedisError as error:
+                redis_span.record_exception(
+                    error
+                )
+
+                redis_span.set_status(
+                    Status(
+                        StatusCode.ERROR,
+                        str(error),
+                    )
+                )
+
+                raise HTTPException(
+                    status_code=(
+                        status.HTTP_503_SERVICE_UNAVAILABLE
+                    ),
+                    detail="Redis is unavailable.",
+                ) from error
+
+            redis_span.set_status(
+                Status(
+                    StatusCode.OK
+                )
+            )
+
+        if feature_bytes is None:
+            request_span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    "Feature not found",
+                )
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Image not processed yet",
+            )
+
+        if not isinstance(
+            feature_bytes,
+            bytes,
+        ):
+            request_span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    "Invalid Redis feature format",
+                )
+            )
+
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "Stored feature has an invalid format."
+                ),
+            )
+
+        try:
+            feature_array = deserialize_feature(
+                feature_bytes
+            )
+
+        except ValueError as error:
+            request_span.record_exception(
+                error
+            )
+
+            request_span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    str(error),
+                )
+            )
+
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "Stored feature has an invalid shape."
+                ),
+            ) from error
+
+        with tracer.start_as_current_span(
+            "v1_model_inference"
+        ) as inference_span:
+            inference_span.set_attribute(
+                "ml.model.version",
+                "v1",
+            )
+
+            start_time = time.perf_counter()
+
+            try:
+                prediction_result_v1 = (
+                    inference_client_v1.predict(
+                        feature_array
+                    )
+                )
+
+            except RuntimeError as error:
+                elapsed_seconds = (
+                    time.perf_counter()
+                    - start_time
+                )
+
+                INFERENCE_LATENCY.labels(
+                    model="v1",
+                ).observe(
+                    elapsed_seconds
+                )
+
+                INFERENCE_REQUESTS.labels(
+                    model="v1",
+                    status="error",
+                ).inc()
+
+                inference_span.record_exception(
+                    error
+                )
+
+                inference_span.set_attribute(
+                    "inference.latency_ms",
+                    elapsed_seconds * 1000,
+                )
+
+                inference_span.set_status(
+                    Status(
+                        StatusCode.ERROR,
+                        str(error),
+                    )
+                )
+
+                raise HTTPException(
+                    status_code=(
+                        status.HTTP_503_SERVICE_UNAVAILABLE
+                    ),
+                    detail=(
+                        "Primary inference service failed."
+                    ),
+                ) from error
+
+            elapsed_seconds = (
+                time.perf_counter()
+                - start_time
+            )
+
+            INFERENCE_LATENCY.labels(
+                model="v1",
+            ).observe(
+                elapsed_seconds
+            )
+
+            INFERENCE_REQUESTS.labels(
+                model="v1",
+                status="success",
+            ).inc()
+
+            inference_span.set_attribute(
+                "inference.latency_ms",
+                elapsed_seconds * 1000,
+            )
+
+            inference_span.set_attribute(
+                "inference.predicted_class",
+                prediction_result_v1.predicted_class,
+            )
+
+            inference_span.set_attribute(
+                "inference.confidence",
+                prediction_result_v1.confidence,
+            )
+
+            inference_span.set_status(
+                Status(
+                    StatusCode.OK
+                )
+            )
+
+        logger.info(
+            (
+                "primary_model=v1 status=success "
+                "latency_ms=%.3f predicted_class=%d "
+                "confidence=%.6f"
+            ),
+            elapsed_seconds * 1000,
+            prediction_result_v1.predicted_class,
+            prediction_result_v1.confidence,
         )
 
-    try:
-        feature_array = deserialize_feature(
-            feature_bytes
-        )
-    except ValueError as error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stored feature has an invalid shape.",
-        ) from error
-
-    start_time = time.perf_counter()
-
-    try:
-        prediction_result_v1 = inference_client_v1.predict(
-            feature_array
-        )
-    except RuntimeError as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Primary inference service failed.",
-        ) from error
-
-    v1_latency_ms = (
-        time.perf_counter() - start_time
-    ) * 1000
-
-    logger.info(
-        (
-            "primary_model=v1 status=success "
-            "latency_ms=%.3f predicted_class=%d "
-            "confidence=%.6f"
-        ),
-        v1_latency_ms,
-        prediction_result_v1.predicted_class,
-        prediction_result_v1.confidence,
-    )
-
-    run_shadow_inference(
-        feature_array=feature_array,
-    )
-
-    predicted_class = prediction_result_v1.predicted_class
-
-    predicted_label = CLASS_NAMES.get(
-        predicted_class
-    )
-
-    if predicted_label is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Inference returned an unknown class.",
+        run_shadow_inference(
+            feature_array=feature_array,
         )
 
-    return PredictionResponse(
-        image_id=image_id,
-        predicted_class=predicted_class,
-        predicted_label=predicted_label,
-        confidence=prediction_result_v1.confidence,
-        model_version="v1",
-    )
+        predicted_class = (
+            prediction_result_v1.predicted_class
+        )
+
+        predicted_label = CLASS_NAMES.get(
+            predicted_class
+        )
+
+        if predicted_label is None:
+            request_span.set_status(
+                Status(
+                    StatusCode.ERROR,
+                    "Unknown predicted class",
+                )
+            )
+
+            raise HTTPException(
+                status_code=(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR
+                ),
+                detail=(
+                    "Inference returned an unknown class."
+                ),
+            )
+
+        request_span.set_attribute(
+            "inference.predicted_class",
+            predicted_class,
+        )
+
+        request_span.set_status(
+            Status(
+                StatusCode.OK
+            )
+        )
+
+        return PredictionResponse(
+            image_id=image_id,
+            predicted_class=predicted_class,
+            predicted_label=predicted_label,
+            confidence=prediction_result_v1.confidence,
+            model_version="v1",
+        )

@@ -13,7 +13,7 @@ model:
   name: cnn
   num_classes: 10
   registry_name: sentinel-mnist-torchscript
-  version: v1
+  version: v2
   output_path: artifacts/model-v1.pt
 
 dataset:

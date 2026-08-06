@@ -1,11 +1,13 @@
+from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
+from typing import Any, cast
 
-import hydra
 import numpy as np
 import pandas as pd
 import torch
 from clearml import Dataset, OutputModel, Task
+from hydra import compose, initialize_config_dir
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from torch import Tensor
@@ -95,6 +97,7 @@ def load_tensor_dataset(
     pixel_dataframe = dataframe.drop(
         columns=[label_column]
     )
+
     pixel_matrix = pixel_dataframe.to_numpy(
         dtype=np.uint8
     )
@@ -111,9 +114,11 @@ def load_tensor_dataset(
         image_bytes = row_to_image_bytes(
             pixel_values
         )
+
         image_tensor = preprocess_image(
             image_bytes
         )
+
         processed_images.append(
             image_tensor.squeeze(0)
         )
@@ -144,6 +149,7 @@ def create_data_loaders(
     validation_size = int(
         len(dataset) * validation_ratio
     )
+
     training_size = (
         len(dataset) - validation_size
     )
@@ -201,6 +207,7 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         logits = model(images)
+
         loss = loss_function(
             logits,
             labels,
@@ -214,14 +221,17 @@ def train_one_epoch(
         total_loss += (
             loss.item() * batch_size
         )
+
         correct_predictions += (
             logits.argmax(dim=1) == labels
         ).sum().item()
+
         total_samples += batch_size
 
     average_loss = (
         total_loss / total_samples
     )
+
     accuracy = (
         correct_predictions / total_samples
     )
@@ -249,6 +259,7 @@ def evaluate(
             labels = labels.to(device)
 
             logits = model(images)
+
             loss = loss_function(
                 logits,
                 labels,
@@ -259,14 +270,17 @@ def evaluate(
             total_loss += (
                 loss.item() * batch_size
             )
+
             correct_predictions += (
                 logits.argmax(dim=1) == labels
             ).sum().item()
+
             total_samples += batch_size
 
     average_loss = (
         total_loss / total_samples
     )
+
     accuracy = (
         correct_predictions / total_samples
     )
@@ -291,6 +305,7 @@ def save_torchscript_model(
     scripted_model = torch.jit.script(
         model
     )
+
     scripted_model.save(
         str(output_path)
     )
@@ -301,6 +316,9 @@ def upload_model_to_clearml(
     model_path: Path,
     model_name: str,
     model_version: str,
+    dataset_version: str,
+    learning_rate: float,
+    validation_accuracy: float,
 ) -> OutputModel:
     """Upload and register the TorchScript model in ClearML."""
 
@@ -334,20 +352,58 @@ def upload_model_to_clearml(
         ),
     )
 
+    output_model.set_metadata(
+        key="model_version",
+        value=model_version,
+        v_type="str",
+    )
+
+    output_model.set_metadata(
+        key="dataset_version",
+        value=dataset_version,
+        v_type="str",
+    )
+
+    output_model.set_metadata(
+        key="learning_rate",
+        value=str(learning_rate),
+        v_type="float",
+    )
+
+    output_model.set_metadata(
+        key="validation_accuracy",
+        value=str(validation_accuracy),
+        v_type="float",
+    )
+
     return output_model
 
 
-@hydra.main(
-    version_base=None,
-    config_path="../../conf",
-    config_name="config",
-)
-def main(cfg: DictConfig) -> None:
+def to_plain_config(value: Any) -> Any:
+    """Convert ClearML proxy containers into standard Python containers."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: to_plain_config(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [
+            to_plain_config(item)
+            for item in value
+        ]
+
+    return value
+
+
+def train(cfg: DictConfig) -> None:
     """Train, export, and register the Sentinel MNIST classifier."""
 
     torch.manual_seed(
         cfg.training.random_seed
     )
+
     np.random.seed(
         cfg.training.random_seed
     )
@@ -364,8 +420,25 @@ def main(cfg: DictConfig) -> None:
         cfg,
         resolve=True,
     )
-    task.connect(
+
+    if not isinstance(resolved_config, dict):
+        raise TypeError(
+            "Expected Hydra configuration to resolve to a dictionary."
+        )
+
+    connected_config = task.connect(
         resolved_config
+    )
+
+    plain_config = to_plain_config(
+        connected_config
+    )
+
+    cfg = cast(
+        DictConfig,
+        OmegaConf.create(
+            plain_config
+        ),
     )
 
     logger = task.get_logger()
@@ -380,6 +453,7 @@ def main(cfg: DictConfig) -> None:
     dataset_root = Path(
         dataset.get_local_copy()
     )
+
     dataset_file = (
         dataset_root
         / str(cfg.dataset.file_name)
@@ -392,11 +466,19 @@ def main(cfg: DictConfig) -> None:
         )
 
     print("Loaded training configuration:")
+
     print(
         OmegaConf.to_yaml(cfg)
     )
-    print(f"Dataset ID: {dataset.id}")
-    print(f"Dataset file: {dataset_file}")
+
+    print(
+        f"Dataset ID: {dataset.id}"
+    )
+
+    print(
+        f"Dataset file: {dataset_file}"
+    )
+
     print(
         "Preparing tensors with shared preprocessing..."
     )
@@ -423,6 +505,7 @@ def main(cfg: DictConfig) -> None:
         print(
             "CUDA is unavailable. Falling back to CPU."
         )
+
         requested_device = "cpu"
 
     device = torch.device(
@@ -443,14 +526,20 @@ def main(cfg: DictConfig) -> None:
     model_output_path = Path(
         str(cfg.model.output_path)
     )
+
     model_registry_name = str(
         cfg.model.registry_name
     )
+
     model_version = str(
         cfg.model.version
     )
 
-    print(f"Training on device: {device}")
+    print(
+        f"Training on device: {device}"
+    )
+
+    validation_accuracy = 0.0
 
     for epoch in range(
         1,
@@ -477,18 +566,21 @@ def main(cfg: DictConfig) -> None:
             value=training_loss,
             iteration=epoch,
         )
+
         logger.report_scalar(
             title="Loss",
             series="Validation",
             value=validation_loss,
             iteration=epoch,
         )
+
         logger.report_scalar(
             title="Accuracy",
             series="Training",
             value=training_accuracy,
             iteration=epoch,
         )
+
         logger.report_scalar(
             title="Accuracy",
             series="Validation",
@@ -514,30 +606,61 @@ def main(cfg: DictConfig) -> None:
         model_path=model_output_path,
         model_name=model_registry_name,
         model_version=model_version,
+        dataset_version=str(cfg.dataset.version),
+        learning_rate=float(cfg.training.learning_rate),
+        validation_accuracy=float(validation_accuracy),
     )
 
     print(
         f"Model saved locally: "
         f"{model_output_path}"
     )
+
     print(
         f"ClearML model name: "
         f"{output_model.name}"
     )
+
     print(
         f"ClearML model version: "
         f"{model_version}"
     )
+
     print(
         f"ClearML model ID: "
         f"{output_model.id}"
     )
+
     print(
         "Model uploaded successfully "
         "to the ClearML model registry."
     )
 
     task.close()
+
+
+def main() -> None:
+    """Load the Hydra configuration from the repository root."""
+
+    config_dir = Path.cwd() / "conf"
+
+    if not config_dir.is_dir():
+        raise FileNotFoundError(
+            "Hydra configuration directory was not found: "
+            f"{config_dir}"
+        )
+
+    with initialize_config_dir(
+        version_base=None,
+        config_dir=str(
+            config_dir.resolve()
+        ),
+    ):
+        cfg = compose(
+            config_name="config",
+        )
+
+    train(cfg)
 
 
 if __name__ == "__main__":

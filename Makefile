@@ -3,9 +3,11 @@
 	check lint type-check test \
 	compose-up compose-build compose-down compose-restart compose-logs \
 	producer-local worker-local api-local \
+	minikube-up minikube-stop minikube-delete \
 	k8s-status k8s-worker-logs k8s-api-logs \
 	k8s-rabbitmq-forward producer-k8s \
-	k8s-postgres-count
+	k8s-postgres-count \
+	k8s-ports k8s-ports-stop
 
 help:
 	@echo "Available commands:"
@@ -28,6 +30,11 @@ help:
 	@echo "  make worker-local            Start the worker locally"
 	@echo "  make api-local               Start the API locally"
 	@echo ""
+	@echo "Minikube:"
+	@echo "  make minikube-up             Create or start the Minikube cluster"
+	@echo "  make minikube-stop           Stop the Minikube cluster"
+	@echo "  make minikube-delete         Delete the Minikube cluster"
+	@echo ""
 	@echo "Kubernetes:"
 	@echo "  make k8s-status              Show Sentinel Kubernetes resources"
 	@echo "  make k8s-worker-logs         Follow Kubernetes worker logs"
@@ -35,6 +42,8 @@ help:
 	@echo "  make k8s-rabbitmq-forward    Forward localhost:5673 to RabbitMQ"
 	@echo "  make producer-k8s            Send producer data to Kubernetes RabbitMQ"
 	@echo "  make k8s-postgres-count      Count rows in feature_log"
+	@echo "  make k8s-ports               Start observability/API port forwards"
+	@echo "  make k8s-ports-stop          Stop observability/API port forwards"
 
 check:
 	uv run ruff check .
@@ -78,6 +87,35 @@ api-local:
 		--host 0.0.0.0 \
 		--port 8000
 
+minikube-up:
+	@echo "Checking Minikube..."
+	@if ! command -v minikube >/dev/null 2>&1; then \
+		echo "ERROR: Minikube is not installed."; \
+		echo "Install Minikube before running this command."; \
+		exit 1; \
+	fi
+	@if ! minikube profile list -o json 2>/dev/null | grep -q '"Name": "minikube"'; then \
+		echo "Minikube cluster does not exist. Creating it..."; \
+		minikube start; \
+	elif ! minikube status >/dev/null 2>&1; then \
+		echo "Minikube cluster exists but is stopped. Starting it..."; \
+		minikube start; \
+	else \
+		echo "Minikube is already running."; \
+	fi
+	@echo ""
+	@kubectl config use-context minikube >/dev/null
+	@echo "Current Kubernetes context:"
+	@kubectl config current-context
+
+minikube-stop:
+	@echo "Stopping Minikube..."
+	minikube stop
+
+minikube-delete:
+	@echo "Deleting Minikube cluster..."
+	minikube delete
+
 k8s-status:
 	kubectl get pods,services,statefulsets,deployments,pvc
 
@@ -104,3 +142,29 @@ k8s-postgres-count:
 		sh -c 'psql -U "$$POSTGRES_USER" \
 		-d "$$POSTGRES_DB" \
 		-tAc "SELECT COUNT(*) FROM feature_log;"'
+
+k8s-ports:
+	@echo "Starting Kubernetes port forwards..."
+	kubectl port-forward deployment/grafana 3000:3000 > /tmp/grafana-port.log 2>&1 & echo $$! > /tmp/grafana-port.pid
+	kubectl port-forward deployment/prometheus 9090:9090 > /tmp/prometheus-port.log 2>&1 & echo $$! > /tmp/prometheus-port.pid
+	kubectl port-forward deployment/jaeger 16686:16686 > /tmp/jaeger-port.log 2>&1 & echo $$! > /tmp/jaeger-port.pid
+	kubectl port-forward deployment/sentinel-api 8000:8000 > /tmp/sentinel-api-port.log 2>&1 & echo $$! > /tmp/sentinel-api-port.pid
+	@echo ""
+	@echo "Port forwards started:"
+	@echo "  Grafana:      http://localhost:3000"
+	@echo "  Prometheus:   http://localhost:9090"
+	@echo "  Jaeger:       http://localhost:16686"
+	@echo "  Sentinel API: http://localhost:8000"
+
+k8s-ports-stop:
+	@echo "Stopping Kubernetes port forwards..."
+	@kill `cat /tmp/grafana-port.pid` 2>/dev/null || true
+	@kill `cat /tmp/prometheus-port.pid` 2>/dev/null || true
+	@kill `cat /tmp/jaeger-port.pid` 2>/dev/null || true
+	@kill `cat /tmp/sentinel-api-port.pid` 2>/dev/null || true
+	@rm -f \
+		/tmp/grafana-port.pid \
+		/tmp/prometheus-port.pid \
+		/tmp/jaeger-port.pid \
+		/tmp/sentinel-api-port.pid
+	@echo "Port forwards stopped."
