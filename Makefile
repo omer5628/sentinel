@@ -149,13 +149,15 @@ k8s-ports:
 	kubectl port-forward deployment/prometheus 9090:9090 > /tmp/prometheus-port.log 2>&1 & echo $$! > /tmp/prometheus-port.pid
 	kubectl port-forward deployment/jaeger 16686:16686 > /tmp/jaeger-port.log 2>&1 & echo $$! > /tmp/jaeger-port.pid
 	kubectl port-forward deployment/sentinel-api 8000:8000 > /tmp/sentinel-api-port.log 2>&1 & echo $$! > /tmp/sentinel-api-port.pid
+	kubectl port-forward service/loki 3100:3100 > /tmp/loki-port.log 2>&1 & echo $$! > /tmp/loki-port.pid
 	@echo ""
 	@echo "Port forwards started:"
 	@echo "  Grafana:      http://localhost:3000"
 	@echo "  Prometheus:   http://localhost:9090"
 	@echo "  Jaeger:       http://localhost:16686"
 	@echo "  Sentinel API: http://localhost:8000"
-
+	@echo "  Loki:         http://localhost:3100"
+	
 k8s-ports-stop:
 	@echo "Stopping Kubernetes port forwards..."
 	@kill `cat /tmp/grafana-port.pid` 2>/dev/null || true

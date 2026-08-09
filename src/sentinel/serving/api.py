@@ -1,4 +1,5 @@
 import logging
+from sentinel.logger import configure_logger
 import os
 import time
 from contextlib import asynccontextmanager
@@ -39,7 +40,7 @@ FEATURE_DTYPE = np.float32
 MODEL_V1_NAME = "sentinel-mnist_1"
 MODEL_V2_NAME = "sentinel-mnist_2"
 
-logger = logging.getLogger("uvicorn.error")
+logger = configure_logger("sentinel.api")
 
 
 resource = Resource.create(
@@ -679,16 +680,24 @@ def predict(
                 )
             )
 
-        logger.info(
-            (
-                "primary_model=v1 status=success "
-                "latency_ms=%.3f predicted_class=%d "
-                "confidence=%.6f"
-            ),
-            elapsed_seconds * 1000,
-            prediction_result_v1.predicted_class,
-            prediction_result_v1.confidence,
-        )
+            logger.info(
+                "Prediction completed",
+                extra={
+                    "structured_data": {
+                        "image_id": image_id,
+                        "model": "v1",
+                        "predicted_class": (
+                            prediction_result_v1.predicted_class
+                        ),
+                        "confidence": (
+                            prediction_result_v1.confidence
+                        ),
+                        "latency_seconds": (
+                            elapsed_seconds
+                        ),
+                    }
+                },
+            )
 
         run_shadow_inference(
             feature_array=feature_array,
