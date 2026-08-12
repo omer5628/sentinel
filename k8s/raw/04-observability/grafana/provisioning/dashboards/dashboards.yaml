@@ -1,0 +1,15 @@
+#This file tells Grafana that any dashboard JSON located in `/var/lib/grafana/dashboards` 
+#should be loaded into the "Sentinel" folder. Grafana also knows how to update an existing 
+#dashboard based on its UID, which is ideal for migrating between machines.
+apiVersion: 1
+
+providers:
+  - name: Sentinel
+    orgId: 1
+    folder: Sentinel
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

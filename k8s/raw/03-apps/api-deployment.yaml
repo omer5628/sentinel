@@ -40,7 +40,7 @@ spec:
 
       containers:
         - name: api
-          image: omer5628/sentinel-api:v1.2
+          image: omer5628/sentinel-api:v1.3
           imagePullPolicy: Always
 
           ports:

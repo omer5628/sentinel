@@ -1,18 +1,57 @@
-# Python bytecode
+# ------------------------------------------------------------
+# Python
+# ------------------------------------------------------------
+
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 
-# Local Kubernetes secrets
-k8s/raw/01-config/secret-db.yaml
+# ------------------------------------------------------------
+# Virtual environments
+# ------------------------------------------------------------
 
-# Environments (uv / virtualenv)
 .venv/
-env/
 venv/
+env/
 ENV/
 
+# ------------------------------------------------------------
+# Test and tool caches
+# ------------------------------------------------------------
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+
+# ------------------------------------------------------------
+# Environment variables and secrets
+# ------------------------------------------------------------
+
+.env
+.env.*
+!.env.example
+
+# Local ClearML configuration / credentials
+clearml.conf
+.clearml.conf
+
+# Local Kubernetes secret manifests
+k8s/raw/01-config/secret-db.yaml
+k8s/raw/01-config/secret-*.yaml
+
+# ------------------------------------------------------------
+# Local runtime files
+# ------------------------------------------------------------
+
+*.log
+*.pid
+
+# ------------------------------------------------------------
 # IDEs and editors
+# ------------------------------------------------------------
+
 .idea/
 .vscode/
 *.suo
@@ -21,39 +60,22 @@ ENV/
 *.sln
 *.swp
 
+# ------------------------------------------------------------
 # OS generated files
+# ------------------------------------------------------------
+
 .DS_Store
 Thumbs.db
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
 
-# Virtual environments
-.venv/
-venv/
+# ------------------------------------------------------------
+# Hydra
+# ------------------------------------------------------------
 
-# Test and tool caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.pyright/
-
-# Environment variables and secrets
-.env
-.env.*
-!.env.example
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-
-# Hydra outputs
 outputs/
 multirun/
 
+# ------------------------------------------------------------
 # Local datasets
+# ------------------------------------------------------------
+
 data/

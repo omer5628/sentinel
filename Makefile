@@ -1,16 +1,28 @@
 .PHONY: \
 	help \
 	check lint type-check test \
+	sync \
+	preflight setup-new-machine \
 	compose-up compose-build compose-down compose-restart compose-logs \
 	producer-local worker-local api-local \
 	minikube-up minikube-stop minikube-delete \
+	k8s-apply k8s-observability-apply \
 	k8s-status k8s-worker-logs k8s-api-logs \
 	k8s-rabbitmq-forward producer-k8s \
 	k8s-postgres-count \
+	grafana-dashboard-apply \
+	clearml-artifacts-upload \
+	smoke-test \
 	k8s-ports k8s-ports-stop
+
 
 help:
 	@echo "Available commands:"
+	@echo ""
+	@echo "New machine setup:"
+	@echo "  make preflight               Check required development tools"
+	@echo "  make sync                    Install Python dependencies with uv"
+	@echo "  make setup-new-machine       Run initial local project setup"
 	@echo ""
 	@echo "Quality checks:"
 	@echo "  make check                   Run Ruff, Pyright and Pytest"
@@ -31,19 +43,59 @@ help:
 	@echo "  make api-local               Start the API locally"
 	@echo ""
 	@echo "Minikube:"
-	@echo "  make minikube-up             Create or start the Minikube cluster"
-	@echo "  make minikube-stop           Stop the Minikube cluster"
-	@echo "  make minikube-delete         Delete the Minikube cluster"
+	@echo "  make minikube-up             Create or start Minikube"
+	@echo "  make minikube-stop           Stop Minikube"
+	@echo "  make minikube-delete         Delete Minikube"
 	@echo ""
 	@echo "Kubernetes:"
+	@echo "  make k8s-apply               Apply Sentinel Kubernetes manifests"
+	@echo "  make k8s-observability-apply Apply observability stack"
 	@echo "  make k8s-status              Show Sentinel Kubernetes resources"
 	@echo "  make k8s-worker-logs         Follow Kubernetes worker logs"
 	@echo "  make k8s-api-logs            Follow Kubernetes API logs"
 	@echo "  make k8s-rabbitmq-forward    Forward localhost:5673 to RabbitMQ"
 	@echo "  make producer-k8s            Send producer data to Kubernetes RabbitMQ"
 	@echo "  make k8s-postgres-count      Count rows in feature_log"
-	@echo "  make k8s-ports               Start observability/API port forwards"
-	@echo "  make k8s-ports-stop          Stop observability/API port forwards"
+	@echo ""
+	@echo "Grafana:"
+	@echo "  make grafana-dashboard-apply Rebuild and apply Grafana dashboard ConfigMap"
+	@echo ""
+	@echo "ClearML Serving:"
+	@echo "  make clearml-artifacts-upload Upload preprocess artifacts with cluster-safe URL"
+	@echo ""
+	@echo "Validation:"
+	@echo "  make smoke-test              Run Sentinel environment smoke tests"
+	@echo ""
+	@echo "Port forwarding:"
+	@echo "  make k8s-ports               Start API and observability port forwards"
+	@echo "  make k8s-ports-stop          Stop all project port forwards"
+
+
+# --------------------------------------------------------------------
+# New machine setup
+# --------------------------------------------------------------------
+
+preflight:
+	./scripts/preflight.sh
+
+sync:
+	uv sync
+
+setup-new-machine: preflight
+	uv sync
+	$(MAKE) minikube-up
+	@echo ""
+	@echo "Initial machine setup completed."
+	@echo "Next:"
+	@echo "  1. Configure ClearML credentials"
+	@echo "  2. Create Kubernetes secrets"
+	@echo "  3. Deploy the Kubernetes manifests"
+	@echo "See docs/NEW_MACHINE_SETUP.md"
+
+
+# --------------------------------------------------------------------
+# Quality
+# --------------------------------------------------------------------
 
 check:
 	uv run ruff check .
@@ -58,6 +110,11 @@ type-check:
 
 test:
 	uv run pytest
+
+
+# --------------------------------------------------------------------
+# Docker Compose
+# --------------------------------------------------------------------
 
 compose-up:
 	docker compose up -d
@@ -75,6 +132,11 @@ compose-restart:
 compose-logs:
 	docker compose logs -f
 
+
+# --------------------------------------------------------------------
+# Local development
+# --------------------------------------------------------------------
+
 producer-local:
 	uv run python -m sentinel.producers.camera_feed
 
@@ -87,24 +149,29 @@ api-local:
 		--host 0.0.0.0 \
 		--port 8000
 
+
+# --------------------------------------------------------------------
+# Minikube
+# --------------------------------------------------------------------
+
 minikube-up:
 	@echo "Checking Minikube..."
 	@if ! command -v minikube >/dev/null 2>&1; then \
 		echo "ERROR: Minikube is not installed."; \
-		echo "Install Minikube before running this command."; \
+		echo "See docs/NEW_MACHINE_SETUP.md"; \
 		exit 1; \
 	fi
 	@if ! minikube profile list -o json 2>/dev/null | grep -q '"Name": "minikube"'; then \
 		echo "Minikube cluster does not exist. Creating it..."; \
-		minikube start; \
+		minikube start --driver=docker; \
 	elif ! minikube status >/dev/null 2>&1; then \
 		echo "Minikube cluster exists but is stopped. Starting it..."; \
 		minikube start; \
 	else \
 		echo "Minikube is already running."; \
 	fi
-	@echo ""
 	@kubectl config use-context minikube >/dev/null
+	@echo ""
 	@echo "Current Kubernetes context:"
 	@kubectl config current-context
 
@@ -116,6 +183,19 @@ minikube-delete:
 	@echo "Deleting Minikube cluster..."
 	minikube delete
 
+
+# --------------------------------------------------------------------
+# Kubernetes deployment
+# --------------------------------------------------------------------
+
+k8s-apply:
+	kubectl apply -f k8s/raw/01-config/
+	kubectl apply -f k8s/raw/02-infra/
+	kubectl apply -f k8s/raw/03-apps/
+
+k8s-observability-apply:
+	kubectl apply -f k8s/raw/04-observability/
+
 k8s-status:
 	kubectl get pods,services,statefulsets,deployments,pvc
 
@@ -126,7 +206,7 @@ k8s-api-logs:
 	kubectl logs deployment/sentinel-api --follow
 
 k8s-rabbitmq-forward:
-	kubectl port-forward pod/rabbitmq-0 5673:5672
+	kubectl port-forward service/rabbitmq 5673:5672
 
 producer-k8s:
 	RABBITMQ_HOST=localhost \
@@ -143,30 +223,91 @@ k8s-postgres-count:
 		-d "$$POSTGRES_DB" \
 		-tAc "SELECT COUNT(*) FROM feature_log;"'
 
+
+# --------------------------------------------------------------------
+# Grafana
+# --------------------------------------------------------------------
+
+grafana-dashboard-apply:
+	kubectl create configmap grafana-dashboards \
+		--from-file=sentinel-observability.json=k8s/raw/04-observability/grafana/dashboards/sentinel-observability.json \
+		--dry-run=client \
+		-o yaml \
+		| kubectl apply -f -
+	kubectl rollout restart deployment/grafana
+	kubectl rollout status deployment/grafana
+
+
+# --------------------------------------------------------------------
+# ClearML Serving
+# --------------------------------------------------------------------
+
+clearml-artifacts-upload:
+	./scripts/upload_serving_artifacts.sh
+
+
+# --------------------------------------------------------------------
+# Smoke tests
+# --------------------------------------------------------------------
+
+smoke-test:
+	./scripts/smoke_test.sh
+
+
+# --------------------------------------------------------------------
+# Port forwarding
+# --------------------------------------------------------------------
+
 k8s-ports:
 	@echo "Starting Kubernetes port forwards..."
-	kubectl port-forward deployment/grafana 3000:3000 > /tmp/grafana-port.log 2>&1 & echo $$! > /tmp/grafana-port.pid
-	kubectl port-forward deployment/prometheus 9090:9090 > /tmp/prometheus-port.log 2>&1 & echo $$! > /tmp/prometheus-port.pid
-	kubectl port-forward deployment/jaeger 16686:16686 > /tmp/jaeger-port.log 2>&1 & echo $$! > /tmp/jaeger-port.pid
-	kubectl port-forward deployment/sentinel-api 8000:8000 > /tmp/sentinel-api-port.log 2>&1 & echo $$! > /tmp/sentinel-api-port.pid
+	@$(MAKE) k8s-ports-stop >/dev/null 2>&1 || true
+	kubectl port-forward service/grafana 3000:3000 > /tmp/grafana-port.log 2>&1 & echo $$! > /tmp/grafana-port.pid
+	kubectl port-forward service/prometheus 9090:9090 > /tmp/prometheus-port.log 2>&1 & echo $$! > /tmp/prometheus-port.pid
+	kubectl port-forward service/jaeger 16686:16686 > /tmp/jaeger-port.log 2>&1 & echo $$! > /tmp/jaeger-port.pid
+	kubectl port-forward service/sentinel-api 8000:8000 > /tmp/sentinel-api-port.log 2>&1 & echo $$! > /tmp/sentinel-api-port.pid
 	kubectl port-forward service/loki 3100:3100 > /tmp/loki-port.log 2>&1 & echo $$! > /tmp/loki-port.pid
+	kubectl port-forward service/clearml-serving-inference 18080:8080 > /tmp/clearml-serving-port.log 2>&1 & echo $$! > /tmp/clearml-serving-port.pid
+	@sleep 2
 	@echo ""
 	@echo "Port forwards started:"
-	@echo "  Grafana:      http://localhost:3000"
-	@echo "  Prometheus:   http://localhost:9090"
-	@echo "  Jaeger:       http://localhost:16686"
-	@echo "  Sentinel API: http://localhost:8000"
-	@echo "  Loki:         http://localhost:3100"
-	
+	@echo "  Grafana:         http://localhost:3000"
+	@echo "  Prometheus:      http://localhost:9090"
+	@echo "  Jaeger:          http://localhost:16686"
+	@echo "  Sentinel API:    http://localhost:8000"
+	@echo "  Loki:            http://localhost:3100"
+	@echo "  ClearML Serving: http://localhost:18080"
+
 k8s-ports-stop:
 	@echo "Stopping Kubernetes port forwards..."
-	@kill `cat /tmp/grafana-port.pid` 2>/dev/null || true
-	@kill `cat /tmp/prometheus-port.pid` 2>/dev/null || true
-	@kill `cat /tmp/jaeger-port.pid` 2>/dev/null || true
-	@kill `cat /tmp/sentinel-api-port.pid` 2>/dev/null || true
-	@rm -f \
+	@for file in \
 		/tmp/grafana-port.pid \
 		/tmp/prometheus-port.pid \
 		/tmp/jaeger-port.pid \
-		/tmp/sentinel-api-port.pid
+		/tmp/sentinel-api-port.pid \
+		/tmp/loki-port.pid \
+		/tmp/clearml-serving-port.pid; do \
+			if [ -f "$$file" ]; then \
+				kill "$$(cat "$$file")" 2>/dev/null || true; \
+				rm -f "$$file"; \
+			fi; \
+	done
 	@echo "Port forwards stopped."
+
+
+#git clone
+#   ↓
+#make preflight
+#   ↓
+#make setup-new-machine
+#   ↓
+#credentials + secrets
+#   ↓
+#make k8s-apply
+#   ↓
+#ClearML Serving
+#   ↓
+#make k8s-observability-apply
+#   ↓
+#make grafana-dashboard-apply
+#   ↓
+#make smoke-test

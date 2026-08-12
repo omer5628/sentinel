@@ -1,4 +1,58 @@
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+data:
+  datasources.yaml: |
+    apiVersion: 1
+
+    prune: true
+
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        editable: false
+
+      - name: Jaeger
+        uid: jaeger
+        type: jaeger
+        access: proxy
+        url: http://jaeger:16686
+        editable: false
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+
+    providers:
+      - name: Sentinel
+        orgId: 1
+        folder: Sentinel
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: grafana-storage
@@ -29,6 +83,7 @@ spec:
       containers:
         - name: grafana
           image: grafana/grafana:latest
+
           ports:
             - name: http
               containerPort: 3000
@@ -36,6 +91,7 @@ spec:
           env:
             - name: GF_SECURITY_ADMIN_USER
               value: admin
+
             - name: GF_SECURITY_ADMIN_PASSWORD
               value: admin
 
@@ -43,10 +99,34 @@ spec:
             - name: grafana-storage
               mountPath: /var/lib/grafana
 
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+
+            - name: grafana-dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+
       volumes:
         - name: grafana-storage
           persistentVolumeClaim:
             claimName: grafana-storage
+
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+
+        - name: grafana-dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
 
 ---
 apiVersion: v1
