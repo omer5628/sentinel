@@ -1,4 +1,4 @@
-import logging
+
 from sentinel.logger import configure_logger
 import os
 import time

@@ -326,24 +326,33 @@ cannot be downloaded by a ClearML Serving Pod because `localhost` inside Kuberne
 
 Before uploading ClearML Serving preprocess artifacts, use a Fileserver address that is reachable from Minikube.
 
-During the current development environment this was:
+Use the Minikube host alias when the artifact must be accessible from Kubernetes:
 
 ```text
-http://192.168.49.1:8081
-```
-
-Example:
-
-```bash
-CLEARML_FILES_HOST=http://192.168.49.1:8081 \
-CLEARML_DEFAULT_OUTPUT_URI=http://192.168.49.1:8081 \
-uv run python ...
+http://host.minikube.internal:8081
 ```
 
 Do not assume `192.168.49.1` is valid on another machine.
 
 After uploading an artifact, verify its URL:
 
+Example:
+CLEARML_FILES_HOST=http://host.minikube.internal:8081 \
+CLEARML_DEFAULT_OUTPUT_URI=http://host.minikube.internal:8081 \
+uv run python ...
+
+Before uploading artifacts, verify that the Fileserver is reachable from inside Minikube:
+kubectl exec -i deployment/clearml-serving-inference -- \
+  python - <<'PY'
+import urllib.request
+
+url = "http://host.minikube.internal:8081"
+
+with urllib.request.urlopen(url, timeout=5) as response:
+    print(response.status)
+PY
+Expected:
+200
 ```python
 from clearml import Task
 
@@ -409,6 +418,7 @@ Grafana         http://localhost:3000
 Prometheus      http://localhost:9090
 Jaeger          http://localhost:16686
 Loki            http://localhost:3100
+ClearML Serving  http://localhost:18080
 ```
 
 ClearML itself runs separately:

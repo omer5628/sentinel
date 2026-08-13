@@ -1,47 +1,24 @@
 # MLOps Sentinel
 
-MLOps Sentinel is an end-to-end MLOps project for building, serving, monitoring, and operating machine-learning models in a production-like environment.
+**MLOps Sentinel** is an end-to-end MLOps platform designed for building, serving, monitoring, and operating machine learning models in a production-like environment.
 
-The project currently includes data ingestion, feature storage, model serving, Kubernetes deployment, experiment/model management, and observability.
+The project incorporates data ingestion, feature storage, model serving, Kubernetes deployment, experiment/model management, and full observability.
 
-## Current Stack
+---
 
-### Development
-- Python
-- uv
-- Ruff
-- Pyright
-- Pytest
-- Git / GitHub
+## 🛠️ Tech Stack
 
-### Data & Messaging
-- PostgreSQL
-- Redis
-- RabbitMQ
+| Category | Technologies |
+| :--- | :--- |
+| **Development** | Python, `uv`, Ruff, Pyright, Pytest, Git, GitHub |
+| **Data & Messaging** | PostgreSQL, Redis, RabbitMQ |
+| **MLOps & Serving** | ClearML, ClearML Serving, NVIDIA Triton Inference Server, FastAPI, gRPC |
+| **Infrastructure** | Docker, Docker Compose, Kubernetes, Minikube, Helm |
+| **Observability** | Prometheus, Grafana, OpenTelemetry, Jaeger, Loki, Promtail |
 
-### MLOps & Model Serving
-- ClearML
-- ClearML Serving
-- NVIDIA Triton Inference Server
-- FastAPI
-- gRPC
+---
 
-### Infrastructure
-- Docker
-- Docker Compose
-- Kubernetes
-- Minikube
-- Helm
-
-### Observability
-- Prometheus
-- Grafana
-- OpenTelemetry
-- Jaeger
-- Loki
-- Promtail
-
-## Project Structure
+## 📁 Project Structure
 
 ```text
 sentinel/
@@ -58,90 +35,96 @@ sentinel/
 ├── pyproject.toml
 ├── uv.lock
 └── README.md
+```
 
-New Machine Setup
+---
 
-For complete instructions for setting up Sentinel on a new development machine, see:
+## 🚀 New Machine Setup
 
-New Machine Setup
+For detailed instructions on setting up Sentinel on a fresh development machine, please refer to the **[New Machine Setup Guide](docs/setup.md)**.
 
-The setup guide includes:
+<details>
+<summary><b>📋 What's covered in the setup guide?</b></summary>
 
-Required software
-Git and GitHub setup
-Python dependencies
-Docker
-ClearML Server
-ClearML credentials
-Minikube
-Kubernetes Secrets
-Sentinel deployment
-ClearML Serving
-Observability
-Grafana dashboard persistence
-Port forwarding
-Basic validation
-Common troubleshooting
-Common Commands
+* Required software dependencies
+* Git and GitHub setup
+* Python dependencies management
+* Docker & Minikube initialization
+* ClearML Server & Credentials setup
+* Kubernetes Secrets configuration
+* Sentinel application & ClearML Serving deployment
+* Observability stack & Grafana dashboard persistence
+* Port forwarding setup
+* Basic validation & troubleshooting steps
+</details>
 
-Install Python dependencies:
+---
 
+## ⚡ Common Commands
+
+Quick access to everyday commands using `make`:
+
+```bash
+# Install Python dependencies
 uv sync
 
-Run quality checks:
-
+# Run quality checks (linting, typing, tests)
 make check
 
-Create or start Minikube:
-
+# Create or start Minikube cluster
 make minikube-up
 
-Show Kubernetes resources:
-
+# Check Kubernetes resources status
 make k8s-status
 
-Start port forwarding:
+# Deploy the observability stack (Prometheus, Grafana, Loki, etc.)
+make k8s-observability-apply
 
+# Apply and provision the Grafana dashboard
+make grafana-dashboard-apply
+
+# Start port forwarding for local access
 make k8s-ports
 
-Stop port forwarding:
-
+# Stop port forwarding
 make k8s-ports-stop
 
-Show all available Make commands:
-
+# List all available Make commands
 make help
-Grafana Dashboard
+```
 
-The Sentinel Grafana dashboard is stored in the repository and is provisioned automatically.
+---
 
-Dashboard files are located under:
+## 📊 Grafana Dashboards
 
-k8s/raw/04-observability/grafana/
+The Sentinel Grafana dashboards are version-controlled and provisioned automatically.
 
-This prevents dashboards from being lost when Minikube is recreated or development moves to another machine.
+* **Location:** `k8s/raw/04-observability/grafana/`
 
-Security
+> **Note:** Dashboard configurations are persistent and will not be lost when recreating the Minikube cluster or switching machines.
 
-Never commit:
+---
 
-ClearML API credentials
-GitHub access tokens
-Docker Hub tokens
-Kubernetes Secret values
-Passwords
-~/clearml.conf
-.env files containing real credentials
+## 🔒 Security Best Practices
 
-Credentials should be stored using local configuration and Kubernetes Secrets.
+> ⚠️ **IMPORTANT:** Never commit sensitive credentials or secret configuration files to the repository!
 
-Development Environment
+Ensure the following items remain uncommitted:
+* ClearML API credentials & `~/clearml.conf`
+* GitHub access tokens & Docker Hub tokens
+* Kubernetes Secret values & Passwords
+* Local `.env` files containing actual secrets
 
-The current documented local environment uses:
+Use **local configuration files** and **Kubernetes Secrets** for secure environment management.
 
-Linux
-Docker
-Minikube
-Local ClearML Server
+---
 
-Cloud deployment instructions such as GCP/GKE will be added separately when the project reaches that stage.
+## 💻 Environment & Infrastructure
+
+The current local development setup is documented for:
+* **OS:** Linux
+* **Containerization:** Docker
+* **Kubernetes:** Minikube
+* **MLOps Core:** Local ClearML Server
+
+*Cloud deployment manifests and workflows (e.g., GCP / GKE) will be added in a future release.*

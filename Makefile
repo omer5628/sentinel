@@ -1,8 +1,6 @@
 .PHONY: \
 	help \
-	check lint type-check test \
-	sync \
-	preflight setup-new-machine \
+	check lint type-check test sync \
 	compose-up compose-build compose-down compose-restart compose-logs \
 	producer-local worker-local api-local \
 	minikube-up minikube-stop minikube-delete \
@@ -11,18 +9,14 @@
 	k8s-rabbitmq-forward producer-k8s \
 	k8s-postgres-count \
 	grafana-dashboard-apply \
-	clearml-artifacts-upload \
-	smoke-test \
 	k8s-ports k8s-ports-stop
 
 
 help:
 	@echo "Available commands:"
 	@echo ""
-	@echo "New machine setup:"
-	@echo "  make preflight               Check required development tools"
+	@echo "Environment:"
 	@echo "  make sync                    Install Python dependencies with uv"
-	@echo "  make setup-new-machine       Run initial local project setup"
 	@echo ""
 	@echo "Quality checks:"
 	@echo "  make check                   Run Ruff, Pyright and Pytest"
@@ -58,13 +52,7 @@ help:
 	@echo "  make k8s-postgres-count      Count rows in feature_log"
 	@echo ""
 	@echo "Grafana:"
-	@echo "  make grafana-dashboard-apply Rebuild and apply Grafana dashboard ConfigMap"
-	@echo ""
-	@echo "ClearML Serving:"
-	@echo "  make clearml-artifacts-upload Upload preprocess artifacts with cluster-safe URL"
-	@echo ""
-	@echo "Validation:"
-	@echo "  make smoke-test              Run Sentinel environment smoke tests"
+	@echo "  make grafana-dashboard-apply Apply the Sentinel Grafana dashboard"
 	@echo ""
 	@echo "Port forwarding:"
 	@echo "  make k8s-ports               Start API and observability port forwards"
@@ -72,25 +60,11 @@ help:
 
 
 # --------------------------------------------------------------------
-# New machine setup
+# Environment
 # --------------------------------------------------------------------
-
-preflight:
-	./scripts/preflight.sh
 
 sync:
 	uv sync
-
-setup-new-machine: preflight
-	uv sync
-	$(MAKE) minikube-up
-	@echo ""
-	@echo "Initial machine setup completed."
-	@echo "Next:"
-	@echo "  1. Configure ClearML credentials"
-	@echo "  2. Create Kubernetes secrets"
-	@echo "  3. Deploy the Kubernetes manifests"
-	@echo "See docs/NEW_MACHINE_SETUP.md"
 
 
 # --------------------------------------------------------------------
@@ -239,34 +213,37 @@ grafana-dashboard-apply:
 
 
 # --------------------------------------------------------------------
-# ClearML Serving
-# --------------------------------------------------------------------
-
-clearml-artifacts-upload:
-	./scripts/upload_serving_artifacts.sh
-
-
-# --------------------------------------------------------------------
-# Smoke tests
-# --------------------------------------------------------------------
-
-smoke-test:
-	./scripts/smoke_test.sh
-
-
-# --------------------------------------------------------------------
 # Port forwarding
 # --------------------------------------------------------------------
 
 k8s-ports:
 	@echo "Starting Kubernetes port forwards..."
 	@$(MAKE) k8s-ports-stop >/dev/null 2>&1 || true
-	kubectl port-forward service/grafana 3000:3000 > /tmp/grafana-port.log 2>&1 & echo $$! > /tmp/grafana-port.pid
-	kubectl port-forward service/prometheus 9090:9090 > /tmp/prometheus-port.log 2>&1 & echo $$! > /tmp/prometheus-port.pid
-	kubectl port-forward service/jaeger 16686:16686 > /tmp/jaeger-port.log 2>&1 & echo $$! > /tmp/jaeger-port.pid
-	kubectl port-forward service/sentinel-api 8000:8000 > /tmp/sentinel-api-port.log 2>&1 & echo $$! > /tmp/sentinel-api-port.pid
-	kubectl port-forward service/loki 3100:3100 > /tmp/loki-port.log 2>&1 & echo $$! > /tmp/loki-port.pid
-	kubectl port-forward service/clearml-serving-inference 18080:8080 > /tmp/clearml-serving-port.log 2>&1 & echo $$! > /tmp/clearml-serving-port.pid
+
+	kubectl port-forward service/grafana 3000:3000 \
+		> /tmp/grafana-port.log 2>&1 & \
+		echo $$! > /tmp/grafana-port.pid
+
+	kubectl port-forward service/prometheus 9090:9090 \
+		> /tmp/prometheus-port.log 2>&1 & \
+		echo $$! > /tmp/prometheus-port.pid
+
+	kubectl port-forward service/jaeger 16686:16686 \
+		> /tmp/jaeger-port.log 2>&1 & \
+		echo $$! > /tmp/jaeger-port.pid
+
+	kubectl port-forward service/sentinel-api 8000:8000 \
+		> /tmp/sentinel-api-port.log 2>&1 & \
+		echo $$! > /tmp/sentinel-api-port.pid
+
+	kubectl port-forward service/loki 3100:3100 \
+		> /tmp/loki-port.log 2>&1 & \
+		echo $$! > /tmp/loki-port.pid
+
+	kubectl port-forward service/clearml-serving-inference 18080:8080 \
+		> /tmp/clearml-serving-port.log 2>&1 & \
+		echo $$! > /tmp/clearml-serving-port.pid
+
 	@sleep 2
 	@echo ""
 	@echo "Port forwards started:"
@@ -292,22 +269,3 @@ k8s-ports-stop:
 			fi; \
 	done
 	@echo "Port forwards stopped."
-
-
-#git clone
-#   ↓
-#make preflight
-#   ↓
-#make setup-new-machine
-#   ↓
-#credentials + secrets
-#   ↓
-#make k8s-apply
-#   ↓
-#ClearML Serving
-#   ↓
-#make k8s-observability-apply
-#   ↓
-#make grafana-dashboard-apply
-#   ↓
-#make smoke-test

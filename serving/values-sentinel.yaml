@@ -1,6 +1,6 @@
 clearml:
   apiHost: "http://host.minikube.internal:8008"
-  filesHost: "http://192.168.49.1:8081"
+  filesHost: "http://host.minikube.internal:8081"
   webHost: "http://host.minikube.internal:8080"
   servingTaskId: "29e0f63937284e5fb4a3d2a4bf53d5f0"
   defaultBaseServeUrl: "http://clearml-serving-inference:8080/serve"
