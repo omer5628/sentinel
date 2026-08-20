@@ -4,7 +4,7 @@
 	compose-up compose-build compose-down compose-restart compose-logs \
 	producer-local worker-local api-local \
 	minikube-up minikube-stop minikube-delete \
-	k8s-apply k8s-observability-apply \
+	k8s-apply k8s-observability-apply k8s-serving-deploy \
 	k8s-status k8s-worker-logs k8s-api-logs \
 	k8s-rabbitmq-forward producer-k8s \
 	k8s-postgres-count \
@@ -44,6 +44,8 @@ help:
 	@echo "Kubernetes:"
 	@echo "  make k8s-apply               Apply Sentinel Kubernetes manifests"
 	@echo "  make k8s-observability-apply Apply observability stack"
+	@echo "  make k8s-serving-deploy SERVING_TASK_ID=<id>"
+	@echo "                               Deploy ClearML Serving with Helm"
 	@echo "  make k8s-status              Show Sentinel Kubernetes resources"
 	@echo "  make k8s-worker-logs         Follow Kubernetes worker logs"
 	@echo "  make k8s-api-logs            Follow Kubernetes API logs"
@@ -55,7 +57,7 @@ help:
 	@echo "  make grafana-dashboard-apply Apply the Sentinel Grafana dashboard"
 	@echo ""
 	@echo "Port forwarding:"
-	@echo "  make k8s-ports               Start API and observability port forwards"
+	@echo "  make k8s-ports               Start all project port forwards"
 	@echo "  make k8s-ports-stop          Stop all project port forwards"
 
 
@@ -170,6 +172,16 @@ k8s-apply:
 k8s-observability-apply:
 	kubectl apply -f k8s/raw/04-observability/
 
+k8s-serving-deploy:
+	@if [ -z "$(SERVING_TASK_ID)" ]; then \
+		echo "ERROR: SERVING_TASK_ID is required."; \
+		echo "Usage:"; \
+		echo "  make k8s-serving-deploy SERVING_TASK_ID=<task-id>"; \
+		exit 1; \
+	fi
+	SERVING_TASK_ID="$(SERVING_TASK_ID)" \
+		./scripts/deploy_clearml_serving.sh
+
 k8s-status:
 	kubectl get pods,services,statefulsets,deployments,pvc
 
@@ -244,15 +256,35 @@ k8s-ports:
 		> /tmp/clearml-serving-port.log 2>&1 & \
 		echo $$! > /tmp/clearml-serving-port.pid
 
+	kubectl port-forward deployment/clearml-serving-triton 18000:8000 \
+		> /tmp/triton-port.log 2>&1 & \
+		echo $$! > /tmp/triton-port.pid
+
+	kubectl port-forward service/rabbitmq 5673:5672 \
+		> /tmp/rabbitmq-amqp-port.log 2>&1 & \
+		echo $$! > /tmp/rabbitmq-amqp-port.pid
+
+	kubectl port-forward pod/rabbitmq-0 15672:15672 \
+		> /tmp/rabbitmq-management-port.log 2>&1 & \
+		echo $$! > /tmp/rabbitmq-management-port.pid
+
 	@sleep 2
 	@echo ""
 	@echo "Port forwards started:"
-	@echo "  Grafana:         http://localhost:3000"
-	@echo "  Prometheus:      http://localhost:9090"
-	@echo "  Jaeger:          http://localhost:16686"
-	@echo "  Sentinel API:    http://localhost:8000"
-	@echo "  Loki:            http://localhost:3100"
-	@echo "  ClearML Serving: http://localhost:18080"
+	@echo "  Sentinel API:        http://localhost:8000"
+	@echo "  Grafana:             http://localhost:3000"
+	@echo "  Prometheus:          http://localhost:9090"
+	@echo "  Jaeger:              http://localhost:16686"
+	@echo "  Loki:                http://localhost:3100"
+	@echo "  ClearML Serving:     http://localhost:18080"
+	@echo "  Triton HTTP:         http://localhost:18000"
+	@echo "  RabbitMQ AMQP:       localhost:5673"
+	@echo "  RabbitMQ Management: http://localhost:15672"
+	@echo ""
+	@echo "ClearML Server runs separately:"
+	@echo "  Web:                 http://localhost:8080"
+	@echo "  API:                 http://localhost:8008"
+	@echo "  Files:               http://localhost:8081"
 
 k8s-ports-stop:
 	@echo "Stopping Kubernetes port forwards..."
@@ -262,10 +294,31 @@ k8s-ports-stop:
 		/tmp/jaeger-port.pid \
 		/tmp/sentinel-api-port.pid \
 		/tmp/loki-port.pid \
-		/tmp/clearml-serving-port.pid; do \
-			if [ -f "$$file" ]; then \
-				kill "$$(cat "$$file")" 2>/dev/null || true; \
-				rm -f "$$file"; \
-			fi; \
+		/tmp/clearml-serving-port.pid \
+		/tmp/triton-port.pid \
+		/tmp/rabbitmq-amqp-port.pid \
+		/tmp/rabbitmq-management-port.pid; do \
+		if [ -f "$$file" ]; then \
+			kill "$$(cat "$$file")" 2>/dev/null || true; \
+			rm -f "$$file"; \
+		fi; \
 	done
+	@ps -eo pid=,args= | awk \
+		'$$2 == "kubectl" && $$3 == "port-forward" && \
+		($$4 == "service/grafana" || \
+		 $$4 == "deployment/grafana" || \
+		 $$4 == "service/prometheus" || \
+		 $$4 == "deployment/prometheus" || \
+		 $$4 == "service/jaeger" || \
+		 $$4 == "deployment/jaeger" || \
+		 $$4 == "service/sentinel-api" || \
+		 $$4 == "deployment/sentinel-api" || \
+		 $$4 == "service/loki" || \
+		 $$4 ~ /^pod\/loki-/ || \
+		 $$4 == "service/clearml-serving-inference" || \
+		 $$4 == "deployment/clearml-serving-triton" || \
+		 $$4 == "service/rabbitmq" || \
+		 $$4 ~ /^pod\/rabbitmq-/) \
+		{print $$1}' \
+		| xargs -r kill 2>/dev/null || true
 	@echo "Port forwards stopped."
