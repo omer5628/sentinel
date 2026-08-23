@@ -24,18 +24,30 @@ echo "Detecting Minikube host address..."
 
 MINIKUBE_HOST_IP="$(
     minikube ssh -- \
-        "getent hosts host.minikube.internal | awk 'NR==1 {print \$1}'" \
+        "getent hosts host.minikube.internal 2>/dev/null | awk 'NR==1 {print \$1}'" \
         | tr -d '\r'
 )"
+
+if [[ -z "$MINIKUBE_HOST_IP" ]]; then
+    MINIKUBE_HOST_IP="$(
+        minikube ssh -- \
+            "ip route | awk '/^default/ {print \$3; exit}'" \
+            | tr -d '\r'
+    )"
+fi
 
 if [[ -z "$MINIKUBE_HOST_IP" ]]; then
     echo "ERROR: Could not determine Minikube host IP."
     exit 1
 fi
 
+API_HOST="${CLEARML_API_HOST_OVERRIDE:-http://${MINIKUBE_HOST_IP}:8008}"
+WEB_HOST="${CLEARML_WEB_HOST_OVERRIDE:-http://${MINIKUBE_HOST_IP}:8080}"
 FILES_HOST="${CLEARML_FILES_HOST_OVERRIDE:-http://${MINIKUBE_HOST_IP}:8081}"
 
 echo "Minikube host: ${MINIKUBE_HOST_IP}"
+echo "ClearML API: ${API_HOST}"
+echo "ClearML Web: ${WEB_HOST}"
 echo "ClearML Fileserver: ${FILES_HOST}"
 
 TEMP_ENV_FILE="$(mktemp)"
@@ -92,6 +104,8 @@ helm upgrade --install clearml-serving clearml/clearml-serving \
     --version 1.6.2 \
     -f "$REPO_ROOT/serving/values-sentinel.yaml" \
     --set-string clearml.servingTaskId="$SERVING_TASK_ID" \
+    --set-string clearml.apiHost="$API_HOST" \
+    --set-string clearml.webHost="$WEB_HOST" \
     --set-string clearml.filesHost="$FILES_HOST" \
     --set-string clearml.apiAccessKey="MANAGED_BY_KUBERNETES_SECRET" \
     --set-string clearml.apiSecretKey="MANAGED_BY_KUBERNETES_SECRET" \

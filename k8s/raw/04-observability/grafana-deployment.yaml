@@ -102,6 +102,9 @@ spec:
             - name: GF_SECURITY_ADMIN_PASSWORD
               value: admin
 
+            - name: GF_SECURITY_CSRF_ADDITIONAL_HEADERS
+              value: "X-Forwarded-Host"
+
           volumeMounts:
             - name: grafana-storage
               mountPath: /var/lib/grafana

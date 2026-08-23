@@ -4,7 +4,6 @@ import os
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
-from uuid import uuid4
 import numpy as np
 import redis
 from fastapi import FastAPI, HTTPException, Response, status
@@ -248,11 +247,6 @@ def run_shadow_inference(
                 - start_time
             )       
 
-            # CARDINALITY_TEST_LATENCY.labels(
-            #     request_id=request_id,
-            # ).observe(
-            #     elapsed_seconds
-            # )
 
             INFERENCE_LATENCY.labels(
                 model="v1",
@@ -443,11 +437,6 @@ def metrics() -> Response:
         media_type=CONTENT_TYPE_LATEST,
     )
 
-CARDINALITY_TEST_LATENCY = Histogram(
-    "inference_latency_cardinality_test_seconds",
-    "Experimental latency metric with a unique request ID.",
-    ["request_id"],
-)
 
 @app.post(
     "/predict/{image_id}",
@@ -465,8 +454,6 @@ def predict(
             "sentinel.image_id",
             image_id,
         )
-        request_id = str(uuid4())
-
         redis_client = application_state.redis_client
         inference_client_v1 = (
             application_state.inference_client_v1
@@ -630,11 +617,6 @@ def predict(
                 elapsed_seconds = (
                     time.perf_counter()
                     - start_time
-                )
-                CARDINALITY_TEST_LATENCY.labels(
-                    request_id=request_id,
-                ).observe(
-                    elapsed_seconds
                 )
 
                 INFERENCE_LATENCY.labels(
