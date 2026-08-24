@@ -1,32 +1,87 @@
 import concurrent.futures
+import os
+import statistics
 import time
 
 import requests
 
 
-URL = "http://localhost:8000/predict/load-test-zero"
+IMAGE_ID = os.getenv(
+    "SENTINEL_IMAGE_ID",
+    "load-test-zero",
+)
+
+URL = (
+    f"http://localhost:8000/predict/{IMAGE_ID}"
+)
 
 TARGET_RPS = 50
 DURATION_SECONDS = 30
 
 
-def send_request() -> int:
-    """Send one prediction request."""
+def send_request() -> tuple[int, float]:
+    """Send one prediction request and measure latency."""
+
+    start_time = time.perf_counter()
 
     try:
         response = requests.post(
             URL,
             timeout=5,
         )
-        return response.status_code
+
+        latency_seconds = (
+            time.perf_counter()
+            - start_time
+        )
+
+        return (
+            response.status_code,
+            latency_seconds,
+        )
+
     except requests.RequestException:
-        return 0
+        latency_seconds = (
+            time.perf_counter()
+            - start_time
+        )
+
+        return (
+            0,
+            latency_seconds,
+        )
+
+
+def percentile(
+    values: list[float],
+    percentile_value: float,
+) -> float:
+    """Calculate a percentile from sorted values."""
+
+    if not values:
+        return 0.0
+
+    sorted_values = sorted(values)
+
+    index = int(
+        round(
+            percentile_value
+            / 100
+            * (len(sorted_values) - 1)
+        )
+    )
+
+    return sorted_values[index]
 
 
 def main() -> None:
     """Generate approximately 50 requests per second."""
 
-    total_requests = TARGET_RPS * DURATION_SECONDS
+    total_requests = (
+        TARGET_RPS
+        * DURATION_SECONDS
+    )
+
     interval = 1 / TARGET_RPS
 
     start_time = time.perf_counter()
@@ -36,7 +91,9 @@ def main() -> None:
     ) as executor:
         futures = []
 
-        for request_index in range(total_requests):
+        for request_index in range(
+            total_requests
+        ):
             target_time = (
                 start_time
                 + request_index * interval
@@ -58,7 +115,7 @@ def main() -> None:
                 )
             )
 
-        statuses = [
+        results = [
             future.result()
             for future in futures
         ]
@@ -67,6 +124,16 @@ def main() -> None:
         time.perf_counter()
         - start_time
     )
+
+    statuses = [
+        status_code
+        for status_code, _ in results
+    ]
+
+    latencies_ms = [
+        latency_seconds * 1000
+        for _, latency_seconds in results
+    ]
 
     successful = sum(
         1
@@ -84,6 +151,23 @@ def main() -> None:
         / elapsed
     )
 
+    average_latency = statistics.mean(
+        latencies_ms
+    )
+
+    p95_latency = percentile(
+        latencies_ms,
+        95,
+    )
+
+    p99_latency = percentile(
+        latencies_ms,
+        99,
+    )
+
+    print(
+        f"Image ID: {IMAGE_ID}"
+    )
     print(
         f"Total requests: {len(statuses)}"
     )
@@ -98,6 +182,15 @@ def main() -> None:
     )
     print(
         f"Achieved RPS: {achieved_rps:.2f}"
+    )
+    print(
+        f"Average latency: {average_latency:.2f} ms"
+    )
+    print(
+        f"P95 latency: {p95_latency:.2f} ms"
+    )
+    print(
+        f"P99 latency: {p99_latency:.2f} ms"
     )
 
 
