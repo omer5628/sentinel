@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: rabbitmq-headless
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: message-broker
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  clusterIP: None
+
+  selector:
+    app.kubernetes.io/name: rabbitmq
+
+  ports:
+    - name: amqp
+      port: {{ .Values.rabbitmq.port }}
+      targetPort: amqp
+
+    - name: management
+      port: {{ .Values.rabbitmq.managementPort }}
+      targetPort: management
+
+---
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: message-broker
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app.kubernetes.io/name: rabbitmq
+
+  ports:
+    - name: amqp
+      port: {{ .Values.rabbitmq.port }}
+      targetPort: amqp
+
+    - name: management
+      port: {{ .Values.rabbitmq.managementPort }}
+      targetPort: management
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: message-broker
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  serviceName: rabbitmq-headless
+  replicas: {{ .Values.rabbitmq.replicaCount }}
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/component: message-broker
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      containers:
+        - name: rabbitmq
+          image: "{{ .Values.rabbitmq.image.repository }}:{{ .Values.rabbitmq.image.tag }}"
+          imagePullPolicy: {{ .Values.rabbitmq.image.pullPolicy }}
+
+          ports:
+            - name: amqp
+              containerPort: {{ .Values.rabbitmq.port }}
+
+            - name: management
+              containerPort: {{ .Values.rabbitmq.managementPort }}
+
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: RABBITMQ_USERNAME
+
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: RABBITMQ_PASSWORD
+
+          readinessProbe:
+            exec:
+              command:
+                - rabbitmq-diagnostics
+                - check_running
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+
+          livenessProbe:
+            exec:
+              command:
+                - rabbitmq-diagnostics
+                - ping
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 6
+
+          resources:
+            requests:
+              cpu: {{ .Values.rabbitmq.resources.requests.cpu | quote }}
+              memory: {{ .Values.rabbitmq.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.rabbitmq.resources.limits.cpu | quote }}
+              memory: {{ .Values.rabbitmq.resources.limits.memory | quote }}
+
+          volumeMounts:
+            - name: rabbitmq-data
+              mountPath: /var/lib/rabbitmq
+
+  volumeClaimTemplates:
+    - metadata:
+        name: rabbitmq-data
+
+      spec:
+        accessModes:
+          - {{ .Values.rabbitmq.persistence.accessMode }}
+
+        resources:
+          requests:
+            storage: {{ .Values.rabbitmq.persistence.size | quote }}

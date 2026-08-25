@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: sentinel-worker
+  labels:
+    app.kubernetes.io/name: sentinel-worker
+    app.kubernetes.io/component: ingestion
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sentinel-worker
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel-worker
+        app.kubernetes.io/component: ingestion
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      imagePullSecrets:
+        - name: {{ .Values.registry.existingPullSecret | quote }}
+
+      containers:
+        - name: worker
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+
+          env:
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: LOG_LEVEL
+
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: RABBITMQ_HOST
+
+            - name: RABBITMQ_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: RABBITMQ_PORT
+
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: REDIS_HOST
+
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: REDIS_PORT
+
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_HOST
+
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_PORT
+
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_DB
+
+            - name: RABBITMQ_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: RABBITMQ_USERNAME
+
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: RABBITMQ_PASSWORD
+
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_USER
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_PASSWORD
+
+          resources:
+            requests:
+              cpu: {{ .Values.worker.resources.requests.cpu | quote }}
+              memory: {{ .Values.worker.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.worker.resources.limits.cpu | quote }}
+              memory: {{ .Values.worker.resources.limits.memory | quote }}
