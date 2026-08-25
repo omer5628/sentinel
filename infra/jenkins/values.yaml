@@ -1,0 +1,39 @@
+controller:
+  replicas: 1
+
+  # Builds should run on Kubernetes agents, not on the controller.
+  numExecutors: 0
+
+  serviceType: ClusterIP
+  servicePort: 8080
+  targetPort: 8080
+
+  admin:
+    username: "admin"
+    createSecret: true
+
+persistence:
+  enabled: true
+  storageClass: "standard"
+  accessMode: "ReadWriteOnce"
+  size: "8Gi"
+
+rbac:
+  create: true
+  readSecrets: false
+
+serviceAccount:
+  create: true
+  name: "jenkins-controller"
+  automountServiceAccountToken: true
+
+serviceAccountAgent:
+  create: true
+  name: "jenkins-deployer"
+  automountServiceAccountToken: true
+
+agent:
+  enabled: true
+  namespace: "jenkins"
+  useDefaultServiceAccount: true
+  serviceAccount: "jenkins-deployer"

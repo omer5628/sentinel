@@ -9,48 +9,6 @@ metadata:
     app.kubernetes.io/part-of: sentinel
 
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-
-metadata:
-  name: "{{ .Release.Name }}-promtail"
-  labels:
-    app.kubernetes.io/name: promtail
-    app.kubernetes.io/component: log-collector
-    app.kubernetes.io/part-of: sentinel
-
-rules:
-  - apiGroups:
-      - ""
-    resources:
-      - pods
-    verbs:
-      - get
-      - list
-      - watch
-
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-
-metadata:
-  name: "{{ .Release.Name }}-promtail"
-  labels:
-    app.kubernetes.io/name: promtail
-    app.kubernetes.io/component: log-collector
-    app.kubernetes.io/part-of: sentinel
-
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: "{{ .Release.Name }}-promtail"
-
-subjects:
-  - kind: ServiceAccount
-    name: promtail
-    namespace: {{ .Release.Namespace | quote }}
-
----
 apiVersion: v1
 kind: ConfigMap
 
@@ -109,6 +67,50 @@ data:
             separator: /
             replacement: /var/log/pods/*$1/$2/*.log
             target_label: __path__
+
+{{- if .Values.promtail.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+
+metadata:
+  name: "{{ .Release.Name }}-promtail"
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/component: log-collector
+    app.kubernetes.io/part-of: sentinel
+
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+
+metadata:
+  name: "{{ .Release.Name }}-promtail"
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/component: log-collector
+    app.kubernetes.io/part-of: sentinel
+
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: "{{ .Release.Name }}-promtail"
+
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: {{ .Release.Namespace | quote }}
+{{- end }}
 
 ---
 apiVersion: apps/v1

@@ -207,3 +207,14 @@ promtail:
     pullPolicy: IfNotPresent
 
   serverPort: 9080
+
+promtail:
+  image:
+    repository: grafana/promtail
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  serverPort: 9080
+
+  rbac:
+    create: false
