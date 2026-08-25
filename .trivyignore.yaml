@@ -1,0 +1,12 @@
+vulnerabilities:
+  - id: CVE-2026-13221
+    expired_at: 2026-09-08
+    statement: "Temporary exception: no fixed Debian package version is currently available."
+
+  - id: CVE-2026-42496
+    expired_at: 2026-09-08
+    statement: "Temporary exception: Trivy reports the vulnerability as fix_deferred with no fixed version."
+
+  - id: CVE-2026-8376
+    expired_at: 2026-09-08
+    statement: "Temporary exception: no fixed Debian package version is currently available."
