@@ -40,6 +40,14 @@ spec:
         - -c
       args:
         - sleep infinity
+
+    - name: skopeo
+      image: quay.io/skopeo/stable:latest
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
 '''
         }
     }
@@ -100,6 +108,36 @@ spec:
                         --exit-code 1 \
                         --ignorefile .trivyignore.yaml
                     '''
+                }
+            }
+        }
+
+        stage('Push Images') {
+            steps {
+                container('skopeo') {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'dockerhub-credentials',
+                            usernameVariable: 'DOCKERHUB_USER',
+                            passwordVariable: 'DOCKERHUB_TOKEN'
+                        )
+                    ]) {
+                        sh '''
+                            echo "$DOCKERHUB_TOKEN" | \
+                            skopeo login \
+                            --username "$DOCKERHUB_USER" \
+                            --password-stdin \
+                            docker.io
+
+                            skopeo copy \
+                            docker-archive:sentinel-api.tar \
+                            docker://docker.io/omer5628/sentinel-api:${BUILD_NUMBER}
+
+                            skopeo copy \
+                            docker-archive:sentinel-worker.tar \
+                            docker://docker.io/omer5628/sentinel-worker:${BUILD_NUMBER}
+                        '''
+                    }
                 }
             }
         }
