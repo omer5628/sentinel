@@ -32,6 +32,14 @@ spec:
           type: Unconfined
         appArmorProfile:
           type: Unconfined
+
+    - name: trivy
+      image: aquasec/trivy:0.74.0
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
 '''
         }
     }
@@ -62,6 +70,21 @@ spec:
                           --local dockerfile=. \
                           --opt filename=Dockerfile.api \
                           --output type=oci,dest=sentinel-api.oci.tar
+                    '''
+                }
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                container('trivy') {
+                    sh '''
+                        trivy image \
+                          --input sentinel-api.oci.tar \
+                          --scanners vuln \
+                          --severity CRITICAL \
+                          --exit-code 1 \
+                          --ignorefile .trivyignore.yaml
                     '''
                 }
             }
