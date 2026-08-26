@@ -48,6 +48,14 @@ spec:
         - -c
       args:
         - sleep infinity
+
+    - name: helm
+      image: alpine/helm:3.18.6
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
 '''
         }
     }
@@ -138,6 +146,23 @@ spec:
                             docker://docker.io/omer5628/sentinel-worker:${BUILD_NUMBER}
                         '''
                     }
+                }
+            }
+        }
+
+        stage('Deploy Dev') {
+            steps {
+                container('helm') {
+                    sh '''
+                        helm upgrade --install sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set-string api.image.tag=${BUILD_NUMBER} \
+                          --set-string worker.image.tag=${BUILD_NUMBER} \
+                          --wait \
+                          --timeout 10m
+                    '''
                 }
             }
         }

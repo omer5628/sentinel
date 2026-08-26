@@ -1,0 +1,14 @@
+registry:
+  existingPullSecret: ""
+
+api:
+  triton:
+    grpcUrl: "clearml-serving-triton.default.svc.cluster.local:8001"
+
+prometheus:
+  service:
+    type: ClusterIP
+
+grafana:
+  service:
+    type: ClusterIP

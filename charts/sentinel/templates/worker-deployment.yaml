@@ -23,8 +23,10 @@ spec:
         app.kubernetes.io/part-of: sentinel
 
     spec:
+      {{- if .Values.registry.existingPullSecret }}
       imagePullSecrets:
         - name: {{ .Values.registry.existingPullSecret | quote }}
+      {{- end }}
 
       containers:
         - name: worker

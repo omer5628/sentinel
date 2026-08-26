@@ -75,7 +75,7 @@ secrets:
   existingSecret: "sentinel-service-secrets"
 
 registry:
-  existingPullSecret: "private-registry-auth"
+  existingPullSecret: ""
 
 api:
   replicaCount: 1
@@ -199,14 +199,6 @@ loki:
   persistence:
     accessMode: ReadWriteOnce
     size: "2Gi"
-
-promtail:
-  image:
-    repository: grafana/promtail
-    tag: "latest"
-    pullPolicy: IfNotPresent
-
-  serverPort: 9080
 
 promtail:
   image:

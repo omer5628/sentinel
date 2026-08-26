@@ -35,8 +35,10 @@ spec:
                     values:
                       - {{ .Values.api.nodeAffinity.type | quote }}
 
+      {{- if .Values.registry.existingPullSecret }}
       imagePullSecrets:
         - name: {{ .Values.registry.existingPullSecret | quote }}
+      {{- end }}
 
       containers:
         - name: api
