@@ -62,14 +62,14 @@ spec:
             steps {
                 container('buildkit') {
                     sh '''
-                        rm -f sentinel-api.oci.tar
+                        rm -f sentinel-api.tar
 
                         buildctl-daemonless.sh build \
-                          --frontend dockerfile.v0 \
-                          --local context=. \
-                          --local dockerfile=. \
-                          --opt filename=Dockerfile.api \
-                          --output type=oci,dest=sentinel-api.oci.tar
+                        --frontend dockerfile.v0 \
+                        --local context=. \
+                        --local dockerfile=. \
+                        --opt filename=Dockerfile.api \
+                        --output type=docker,name=omer5628/sentinel-api:${BUILD_NUMBER},dest=sentinel-api.tar
                     '''
                 }
             }
@@ -80,7 +80,7 @@ spec:
                 container('trivy') {
                     sh '''
                         trivy image \
-                          --input sentinel-api.oci.tar \
+                          --input sentinel-api.tar \
                           --scanners vuln \
                           --severity CRITICAL \
                           --exit-code 1 \
