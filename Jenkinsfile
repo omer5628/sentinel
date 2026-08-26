@@ -87,11 +87,18 @@ spec:
                 container('trivy') {
                     sh '''
                         trivy image \
-                          --input sentinel-api.tar \
-                          --scanners vuln \
-                          --severity CRITICAL \
-                          --exit-code 1 \
-                          --ignorefile .trivyignore.yaml
+                        --input sentinel-api.tar \
+                        --scanners vuln \
+                        --severity CRITICAL \
+                        --exit-code 1 \
+                        --ignorefile .trivyignore.yaml
+
+                        trivy image \
+                        --input sentinel-worker.tar \
+                        --scanners vuln \
+                        --severity CRITICAL \
+                        --exit-code 1 \
+                        --ignorefile .trivyignore.yaml
                     '''
                 }
             }
