@@ -17,10 +17,6 @@ spec:
         }
     }
 
-    options {
-        timestamps()
-    }
-
     stages {
         stage('Test') {
             steps {
