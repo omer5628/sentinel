@@ -58,11 +58,11 @@ spec:
             }
         }
 
-        stage('Build API Image') {
+        stage('Build Images') {
             steps {
                 container('buildkit') {
                     sh '''
-                        rm -f sentinel-api.tar
+                        rm -f sentinel-api.tar sentinel-worker.tar
 
                         buildctl-daemonless.sh build \
                         --frontend dockerfile.v0 \
@@ -70,6 +70,13 @@ spec:
                         --local dockerfile=. \
                         --opt filename=Dockerfile.api \
                         --output type=docker,name=omer5628/sentinel-api:${BUILD_NUMBER},dest=sentinel-api.tar
+
+                        buildctl-daemonless.sh build \
+                        --frontend dockerfile.v0 \
+                        --local context=. \
+                        --local dockerfile=. \
+                        --opt filename=Dockerfile.worker \
+                        --output type=docker,name=omer5628/sentinel-worker:${BUILD_NUMBER},dest=sentinel-worker.tar
                     '''
                 }
             }
