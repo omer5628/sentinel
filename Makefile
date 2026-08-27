@@ -133,7 +133,8 @@ api-local:
 # --------------------------------------------------------------------
 # Minikube
 # --------------------------------------------------------------------
-
+MINIKUBE_CPUS ?= 10
+MINIKUBE_MEMORY ?= 24576
 minikube-up:
 	@echo "Checking Minikube..."
 	@if ! command -v minikube >/dev/null 2>&1; then \
@@ -143,7 +144,10 @@ minikube-up:
 	fi
 	@if ! minikube profile list -o json 2>/dev/null | grep -q '"Name": "minikube"'; then \
 		echo "Minikube cluster does not exist. Creating it..."; \
-		minikube start --driver=docker; \
+		minikube start \
+			--driver=docker \
+			--cpus=$(MINIKUBE_CPUS) \
+			--memory=$(MINIKUBE_MEMORY); \
 	elif ! minikube status >/dev/null 2>&1; then \
 		echo "Minikube cluster exists but is stopped. Starting it..."; \
 		minikube start; \
