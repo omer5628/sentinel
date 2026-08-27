@@ -1,5 +1,6 @@
 .PHONY: \
 	help \
+	system-up \
 	check lint type-check test sync \
 	compose-up compose-build compose-down compose-restart compose-logs \
 	producer-local worker-local api-local \
@@ -59,6 +60,9 @@ help:
 	@echo "Port forwarding:"
 	@echo "  make k8s-ports               Start all project port forwards"
 	@echo "  make k8s-ports-stop          Stop all project port forwards"
+	@echo "System:"
+	@echo "  make system-up               Start Minikube and all port forwards"
+	@echo ""
 
 
 # --------------------------------------------------------------------
@@ -268,6 +272,10 @@ k8s-ports:
 		> /tmp/rabbitmq-management-port.log 2>&1 & \
 		echo $$! > /tmp/rabbitmq-management-port.pid
 
+	kubectl port-forward -n jenkins service/jenkins 8082:8080 \
+		> /tmp/jenkins-port.log 2>&1 & \
+		echo $$! > /tmp/jenkins-port.pid
+
 	@sleep 2
 	@echo ""
 	@echo "Port forwards started:"
@@ -280,6 +288,7 @@ k8s-ports:
 	@echo "  Triton HTTP:         http://localhost:18000"
 	@echo "  RabbitMQ AMQP:       localhost:5673"
 	@echo "  RabbitMQ Management: http://localhost:15672"
+	@echo "  Jenkins:             http://localhost:8082"
 	@echo ""
 	@echo "ClearML Server runs separately:"
 	@echo "  Web:                 http://localhost:8080"
@@ -297,14 +306,15 @@ k8s-ports-stop:
 		/tmp/clearml-serving-port.pid \
 		/tmp/triton-port.pid \
 		/tmp/rabbitmq-amqp-port.pid \
-		/tmp/rabbitmq-management-port.pid; do \
+		/tmp/rabbitmq-management-port.pid \
+		/tmp/jenkins-port.pid; do \
 		if [ -f "$$file" ]; then \
 			kill "$$(cat "$$file")" 2>/dev/null || true; \
 			rm -f "$$file"; \
 		fi; \
 	done
 	@ps -eo pid=,args= | awk \
-		'$$2 == "kubectl" && $$3 == "port-forward" && \
+		'($$2 == "kubectl" && $$3 == "port-forward" && \
 		($$4 == "service/grafana" || \
 		 $$4 == "deployment/grafana" || \
 		 $$4 == "service/prometheus" || \
@@ -318,7 +328,18 @@ k8s-ports-stop:
 		 $$4 == "service/clearml-serving-inference" || \
 		 $$4 == "deployment/clearml-serving-triton" || \
 		 $$4 == "service/rabbitmq" || \
-		 $$4 ~ /^pod\/rabbitmq-/) \
+		 $$4 ~ /^pod\/rabbitmq-/)) || \
+		($$2 == "kubectl" && $$3 == "port-forward" && \
+		 $$4 == "-n" && $$5 == "jenkins" && \
+		 $$6 == "service/jenkins") \
 		{print $$1}' \
 		| xargs -r kill 2>/dev/null || true
 	@echo "Port forwards stopped."
+
+
+system-up:
+	@echo "Starting Sentinel system..."
+	@$(MAKE) minikube-up
+	@$(MAKE) k8s-ports
+	@echo ""
+	@echo "Sentinel system is up."
