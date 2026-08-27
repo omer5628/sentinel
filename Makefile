@@ -135,6 +135,9 @@ api-local:
 # --------------------------------------------------------------------
 MINIKUBE_CPUS ?= 10
 MINIKUBE_MEMORY ?= 24576
+MINIKUBE_RESERVED_CPUS ?= 6
+MINIKUBE_RESERVED_MEMORY ?= 37Gi
+
 minikube-up:
 	@echo "Checking Minikube..."
 	@if ! command -v minikube >/dev/null 2>&1; then \
@@ -147,7 +150,8 @@ minikube-up:
 		minikube start \
 			--driver=docker \
 			--cpus=$(MINIKUBE_CPUS) \
-			--memory=$(MINIKUBE_MEMORY); \
+			--memory=$(MINIKUBE_MEMORY) \
+			--extra-config=kubelet.system-reserved=cpu=$(MINIKUBE_RESERVED_CPUS),memory=$(MINIKUBE_RESERVED_MEMORY); \
 	elif ! minikube status >/dev/null 2>&1; then \
 		echo "Minikube cluster exists but is stopped. Starting it..."; \
 		minikube start; \
@@ -158,10 +162,6 @@ minikube-up:
 	@echo ""
 	@echo "Current Kubernetes context:"
 	@kubectl config current-context
-
-minikube-stop:
-	@echo "Stopping Minikube..."
-	minikube stop
 
 minikube-delete:
 	@echo "Deleting Minikube cluster..."
