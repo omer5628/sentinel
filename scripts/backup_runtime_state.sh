@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 BACKUP_ROOT="${SENTINEL_PERSISTENT_DIR:-$HOME/sentinel-persistent}"
 BACKUP_DIR="${BACKUP_ROOT}/jenkins"
+SECRETS_BACKUP_DIR="${BACKUP_ROOT}/secrets"
 
 JENKINS_NAMESPACE="jenkins"
 JENKINS_STATEFULSET="jenkins"
@@ -56,6 +57,88 @@ cleanup() {
 trap cleanup EXIT
 
 
+backup_secrets() {
+    echo "Backing up Kubernetes secrets..."
+
+    mkdir -p "$SECRETS_BACKUP_DIR"
+    chmod 700 "$SECRETS_BACKUP_DIR"
+
+    uv run python - "$SECRETS_BACKUP_DIR" <<'PYTHON'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+backup_dir = Path(sys.argv[1])
+
+secrets = [
+    ("default", "clearml-serving-credentials"),
+    ("default", "sentinel-service-secrets"),
+    ("sentinel-dev", "grafana-admin-credentials"),
+    ("sentinel-dev", "sentinel-service-secrets"),
+]
+
+for namespace, name in secrets:
+    raw = subprocess.check_output(
+        [
+            "kubectl",
+            "get",
+            "secret",
+            name,
+            "-n",
+            namespace,
+            "-o",
+            "json",
+        ],
+        text=True,
+    )
+
+    source = json.loads(raw)
+
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+        },
+        "type": source["type"],
+        "data": source["data"],
+    }
+
+    output = backup_dir / f"{namespace}-{name}.yaml"
+
+    output.write_text(
+        yaml.safe_dump(
+            manifest,
+            sort_keys=False,
+        )
+    )
+
+    output.chmod(0o600)
+PYTHON
+
+    (
+        cd "$SECRETS_BACKUP_DIR"
+
+        sha256sum \
+            default-clearml-serving-credentials.yaml \
+            default-sentinel-service-secrets.yaml \
+            sentinel-dev-grafana-admin-credentials.yaml \
+            sentinel-dev-sentinel-service-secrets.yaml \
+            > SHA256SUMS
+
+        chmod 600 SHA256SUMS
+
+        sha256sum -c SHA256SUMS
+    )
+
+    echo "Kubernetes secrets backup completed successfully."
+}
+
+
 echo "Checking Jenkins resources..."
 
 kubectl get namespace "$JENKINS_NAMESPACE" >/dev/null
@@ -75,6 +158,9 @@ ORIGINAL_REPLICAS="$(
 
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_ROOT" "$BACKUP_DIR"
+
+
+backup_secrets
 
 
 echo "Stopping Jenkins..."
