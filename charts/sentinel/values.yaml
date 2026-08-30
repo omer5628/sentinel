@@ -209,4 +209,4 @@ promtail:
   serverPort: 9080
 
   rbac:
-    create: false
+    create: true

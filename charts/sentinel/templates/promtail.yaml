@@ -36,6 +36,9 @@ data:
 
         kubernetes_sd_configs:
           - role: pod
+            namespaces:
+              names:
+                - {{ .Release.Namespace | quote }}
 
         pipeline_stages:
           - docker: {}
@@ -71,10 +74,11 @@ data:
 {{- if .Values.promtail.rbac.create }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 
 metadata:
   name: "{{ .Release.Name }}-promtail"
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     app.kubernetes.io/name: promtail
     app.kubernetes.io/component: log-collector
@@ -92,10 +96,11 @@ rules:
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 
 metadata:
   name: "{{ .Release.Name }}-promtail"
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     app.kubernetes.io/name: promtail
     app.kubernetes.io/component: log-collector
@@ -103,7 +108,7 @@ metadata:
 
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: "{{ .Release.Name }}-promtail"
 
 subjects:
