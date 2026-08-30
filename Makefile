@@ -1,6 +1,7 @@
 .PHONY: \
 	help \
 	system-up \
+	backup-runtime \
 	check lint type-check test sync \
 	compose-up compose-build compose-down compose-restart compose-logs \
 	producer-local worker-local api-local \
@@ -60,6 +61,9 @@ help:
 	@echo "Port forwarding:"
 	@echo "  make k8s-ports               Start all project port forwards"
 	@echo "  make k8s-ports-stop          Stop all project port forwards"
+	@echo "Backup:"
+	@echo "  make backup-runtime          Back up persistent runtime state"
+	@echo ""
 	@echo "System:"
 	@echo "  make system-up               Start Minikube and all port forwards"
 	@echo ""
@@ -232,7 +236,12 @@ grafana-dashboard-apply:
 	kubectl rollout restart deployment/grafana
 	kubectl rollout status deployment/grafana
 
+# --------------------------------------------------------------------
+# Backup
+# --------------------------------------------------------------------
 
+backup-runtime:
+	@./scripts/backup_runtime_state.sh
 # --------------------------------------------------------------------
 # Port forwarding
 # --------------------------------------------------------------------
