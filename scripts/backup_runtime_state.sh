@@ -15,12 +15,17 @@ CHECKSUM="${ARCHIVE}.sha256"
 
 ORIGINAL_REPLICAS=""
 BACKUP_POD_CREATED=false
+TEMP_ARCHIVE=""
 
 
 cleanup() {
     exit_code=$?
 
     set +e
+
+    if [[ -n "$TEMP_ARCHIVE" && -f "$TEMP_ARCHIVE" ]]; then
+        rm -f "$TEMP_ARCHIVE"
+    fi
 
     if [[ "$BACKUP_POD_CREATED" == "true" ]]; then
         echo "Removing temporary Jenkins backup pod..."
@@ -93,7 +98,8 @@ echo "Creating temporary backup pod..."
 
 kubectl delete pod "$BACKUP_POD" \
     -n "$JENKINS_NAMESPACE" \
-    --ignore-not-found >/dev/null
+    --ignore-not-found \
+    --wait=true >/dev/null
 
 kubectl apply -f - <<YAML >/dev/null
 apiVersion: v1
@@ -156,6 +162,7 @@ fi
 
 
 mv "$TEMP_ARCHIVE" "$ARCHIVE"
+TEMP_ARCHIVE=""
 
 (
     cd "$BACKUP_DIR"
