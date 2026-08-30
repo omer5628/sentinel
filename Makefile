@@ -205,19 +205,21 @@ k8s-api-logs:
 	kubectl logs deployment/sentinel-api --follow
 
 k8s-rabbitmq-forward:
-	kubectl port-forward service/rabbitmq 5673:5672
+	kubectl port-forward -n sentinel-dev service/rabbitmq 5673:5672
 
 producer-k8s:
 	RABBITMQ_HOST=localhost \
 	RABBITMQ_PORT=5673 \
 	RABBITMQ_USERNAME="$$(kubectl get secret sentinel-service-secrets \
+		-n sentinel-dev \
 		-o jsonpath='{.data.RABBITMQ_USERNAME}' | base64 -d)" \
 	RABBITMQ_PASSWORD="$$(kubectl get secret sentinel-service-secrets \
+		-n sentinel-dev \
 		-o jsonpath='{.data.RABBITMQ_PASSWORD}' | base64 -d)" \
 	uv run python -m sentinel.producers.camera_feed
 
 k8s-postgres-count:
-	kubectl exec postgres-0 -- \
+	kubectl exec -n sentinel-dev postgres-0 -- \
 		sh -c 'psql -U "$$POSTGRES_USER" \
 		-d "$$POSTGRES_DB" \
 		-tAc "SELECT COUNT(*) FROM feature_log;"'
