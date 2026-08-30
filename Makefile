@@ -152,7 +152,7 @@ minikube-up:
 			--cpus=$(MINIKUBE_CPUS) \
 			--memory=$(MINIKUBE_MEMORY) \
 			--extra-config=kubelet.system-reserved=cpu=$(MINIKUBE_RESERVED_CPUS),memory=$(MINIKUBE_RESERVED_MEMORY) \
-			--extra-config=proxy.masquerade-all=true; \ 
+			--extra-config=proxy.masquerade-all=true; \
 	elif ! minikube status >/dev/null 2>&1; then \
 		echo "Minikube cluster exists but is stopped. Starting it..."; \
 		minikube start; \
