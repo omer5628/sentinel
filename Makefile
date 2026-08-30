@@ -145,14 +145,14 @@ minikube-up:
 		echo "See docs/NEW_MACHINE_SETUP.md"; \
 		exit 1; \
 	fi
-	@if ! minikube profile list -o json 2>/dev/null | grep -q '"Name": "minikube"'; then \
+	@if ! minikube profile list -o json 2>/dev/null | grep -Eq '"Name"[[:space:]]*:[[:space:]]*"minikube"'; then \
 		echo "Minikube cluster does not exist. Creating it..."; \
 		minikube start \
 			--driver=docker \
 			--cpus=$(MINIKUBE_CPUS) \
 			--memory=$(MINIKUBE_MEMORY) \
 			--extra-config=kubelet.system-reserved=cpu=$(MINIKUBE_RESERVED_CPUS),memory=$(MINIKUBE_RESERVED_MEMORY) \
-			--extra-config=proxy.masquerade-all=true; \
+			--extra-config=kube-proxy.masquerade-all=true; \
 	elif ! minikube status >/dev/null 2>&1; then \
 		echo "Minikube cluster exists but is stopped. Starting it..."; \
 		minikube start; \
