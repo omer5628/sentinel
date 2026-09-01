@@ -14,6 +14,13 @@ spec:
       command:
         - cat
       tty: true
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 3Gi
 
     - name: buildkit
       image: moby/buildkit:v0.32.2-rootless
@@ -25,6 +32,13 @@ spec:
       env:
         - name: BUILDKITD_FLAGS
           value: --oci-worker-no-process-sandbox
+      resources:
+        requests:
+          cpu: "1"
+          memory: 2Gi
+        limits:
+          cpu: "4"
+          memory: 8Gi
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
@@ -40,6 +54,13 @@ spec:
         - -c
       args:
         - sleep infinity
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 3Gi
 
     - name: skopeo
       image: quay.io/skopeo/stable:latest
@@ -48,6 +69,13 @@ spec:
         - -c
       args:
         - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
 
     - name: helm
       image: alpine/helm:3.18.6
@@ -56,8 +84,20 @@ spec:
         - -c
       args:
         - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
 '''
         }
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 45, unit: 'MINUTES')
     }
 
     stages {
@@ -165,6 +205,15 @@ spec:
                     '''
                 }
             }
+        }
+    }
+
+    post {
+        always {
+            sh '''
+                rm -f sentinel-api.tar
+                rm -f sentinel-worker.tar
+            '''
         }
     }
 }
