@@ -2,6 +2,7 @@
 	help \
 	system-up \
 	backup-runtime \
+	docker-persistence-check minikube-network-check \
 	check lint type-check test sync \
 	compose-up compose-build compose-down compose-restart compose-logs \
 	producer-local worker-local api-local \
@@ -19,6 +20,8 @@ help:
 	@echo ""
 	@echo "Environment:"
 	@echo "  make sync                    Install Python dependencies with uv"
+	@echo "  make docker-persistence-check Verify persistent Docker storage"
+	@echo "  make minikube-network-check   Verify Kubernetes service networking"
 	@echo ""
 	@echo "Quality checks:"
 	@echo "  make check                   Run Ruff, Pyright and Pytest"
@@ -75,6 +78,12 @@ help:
 
 sync:
 	uv sync
+
+docker-persistence-check:
+	@./scripts/ensure_docker_persistence.sh
+
+minikube-network-check:
+	@./scripts/ensure_minikube_networking.sh
 
 
 # --------------------------------------------------------------------
@@ -143,6 +152,7 @@ MINIKUBE_RESERVED_CPUS ?= 6
 MINIKUBE_RESERVED_MEMORY ?= 37Gi
 
 minikube-up:
+	@$(MAKE) docker-persistence-check
 	@echo "Checking Minikube..."
 	@if ! command -v minikube >/dev/null 2>&1; then \
 		echo "ERROR: Minikube is not installed."; \
@@ -164,6 +174,7 @@ minikube-up:
 		echo "Minikube is already running."; \
 	fi
 	@kubectl config use-context minikube >/dev/null
+	@$(MAKE) minikube-network-check
 	@echo ""
 	@echo "Current Kubernetes context:"
 	@kubectl config current-context
