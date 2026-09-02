@@ -1,9 +1,11 @@
-
-from sentinel.logger import configure_logger
+import argparse
+import json
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
+
 import numpy as np
 import redis
 from fastapi import FastAPI, HTTPException, Response, status
@@ -24,6 +26,7 @@ from prometheus_client import (
 from pydantic import BaseModel
 from redis import Redis
 
+from sentinel.logger import configure_logger
 from sentinel.serving.inference_client import TritonInferenceClient
 
 
@@ -245,8 +248,7 @@ def run_shadow_inference(
             elapsed_seconds = (
                 time.perf_counter()
                 - start_time
-            )       
-
+            )
 
             INFERENCE_LATENCY.labels(
                 model="v1",
@@ -454,6 +456,7 @@ def predict(
             "sentinel.image_id",
             image_id,
         )
+
         redis_client = application_state.redis_client
         inference_client_v1 = (
             application_state.inference_client_v1
@@ -542,7 +545,6 @@ def predict(
                         "http_status": 404,
                     }
                 },
-
             )
 
             raise HTTPException(
@@ -758,3 +760,41 @@ def predict(
             confidence=prediction_result_v1.confidence,
             model_version="v1",
         )
+
+
+def export_openapi() -> None:
+    """Write the current FastAPI OpenAPI specification to stdout."""
+
+    json.dump(
+        app.openapi(),
+        sys.stdout,
+        indent=2,
+    )
+
+    sys.stdout.write("\n")
+
+
+def main() -> None:
+    """Handle command-line operations for the serving API."""
+
+    parser = argparse.ArgumentParser(
+        description="Sentinel Serving API utilities."
+    )
+
+    parser.add_argument(
+        "--export-openapi",
+        action="store_true",
+        help="Export the FastAPI OpenAPI specification as JSON.",
+    )
+
+    args = parser.parse_args()
+
+    if args.export_openapi:
+        export_openapi()
+        return
+
+    parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

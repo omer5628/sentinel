@@ -108,6 +108,29 @@ spec:
             }
         }
 
+        stage('API Documentation') {
+            steps {
+                sh '''
+                    uv run --frozen python \
+                      -m sentinel.serving.api \
+                      --export-openapi \
+                      > openapi.json
+
+                    test -s openapi.json
+
+                    uv run --frozen python \
+                      -m json.tool \
+                      openapi.json \
+                      > /dev/null
+                '''
+
+                archiveArtifacts(
+                    artifacts: 'openapi.json',
+                    fingerprint: true
+                )
+            }
+        }
+
         stage('Compliance') {
             steps {
                 sh 'uv run --frozen python scripts/check_licenses.py'
@@ -251,6 +274,7 @@ spec:
             sh '''
                 rm -f sentinel-api.tar
                 rm -f sentinel-worker.tar
+                rm -f openapi.json
             '''
         }
     }
