@@ -190,6 +190,18 @@ spec:
             }
         }
 
+        stage('Integration Test') {
+            steps {
+                sh '''
+                    INTEGRATION_API_IMAGE="omer5628/sentinel-api:${BUILD_NUMBER}" \
+                    INTEGRATION_NAMESPACE="sentinel-dev" \
+                    uv run --frozen pytest \
+                      tests/integration/test_container_startup.py \
+                      -v
+                '''
+            }
+        }
+
         stage('Deploy Dev') {
             steps {
                 container('helm') {
