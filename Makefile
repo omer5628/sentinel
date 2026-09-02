@@ -263,39 +263,39 @@ k8s-ports:
 	@echo "Starting Kubernetes port forwards..."
 	@$(MAKE) k8s-ports-stop >/dev/null 2>&1 || true
 
-	kubectl port-forward service/grafana 3000:3000 \
+	kubectl port-forward -n sentinel-dev service/grafana 3000:3000 \
 		> /tmp/grafana-port.log 2>&1 & \
 		echo $$! > /tmp/grafana-port.pid
 
-	kubectl port-forward service/prometheus 9090:9090 \
+	kubectl port-forward -n sentinel-dev service/prometheus 9090:9090 \
 		> /tmp/prometheus-port.log 2>&1 & \
 		echo $$! > /tmp/prometheus-port.pid
 
-	kubectl port-forward service/jaeger 16686:16686 \
+	kubectl port-forward -n sentinel-dev service/jaeger 16686:16686 \
 		> /tmp/jaeger-port.log 2>&1 & \
 		echo $$! > /tmp/jaeger-port.pid
 
-	kubectl port-forward service/sentinel-api 8000:8000 \
+	kubectl port-forward -n sentinel-dev service/sentinel-api 8000:8000 \
 		> /tmp/sentinel-api-port.log 2>&1 & \
 		echo $$! > /tmp/sentinel-api-port.pid
 
-	kubectl port-forward service/loki 3100:3100 \
+	kubectl port-forward -n sentinel-dev service/loki 3100:3100 \
 		> /tmp/loki-port.log 2>&1 & \
 		echo $$! > /tmp/loki-port.pid
 
-	kubectl port-forward service/clearml-serving-inference 18080:8080 \
+	kubectl port-forward -n default service/clearml-serving-inference 18080:8080 \
 		> /tmp/clearml-serving-port.log 2>&1 & \
 		echo $$! > /tmp/clearml-serving-port.pid
 
-	kubectl port-forward deployment/clearml-serving-triton 18000:8000 \
+	kubectl port-forward -n default deployment/clearml-serving-triton 18000:8000 \
 		> /tmp/triton-port.log 2>&1 & \
 		echo $$! > /tmp/triton-port.pid
 
-	kubectl port-forward service/rabbitmq 5673:5672 \
+	kubectl port-forward -n sentinel-dev service/rabbitmq 5673:5672 \
 		> /tmp/rabbitmq-amqp-port.log 2>&1 & \
 		echo $$! > /tmp/rabbitmq-amqp-port.pid
 
-	kubectl port-forward pod/rabbitmq-0 15672:15672 \
+	kubectl port-forward -n sentinel-dev pod/rabbitmq-0 15672:15672 \
 		> /tmp/rabbitmq-management-port.log 2>&1 & \
 		echo $$! > /tmp/rabbitmq-management-port.pid
 
