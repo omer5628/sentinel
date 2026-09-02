@@ -25,7 +25,7 @@ RUN uv sync \
     --no-editable
 
 
-FROM python:3.11-slim AS runtime
+FROM python:3.11.0-slim-bullseye AS runtime
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
