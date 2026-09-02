@@ -12,6 +12,8 @@ controller:
     username: "admin"
     createSecret: true
 
+  initializeOnce: true
+
 persistence:
   enabled: true
   storageClass: "standard"
