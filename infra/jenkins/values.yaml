@@ -1,0 +1,179 @@
+controller:
+  replicas: 1
+
+  # Builds should run on Kubernetes agents, not on the controller.
+  numExecutors: 0
+
+  serviceType: ClusterIP
+  servicePort: 8080
+  targetPort: 8080
+
+  admin:
+    username: "admin"
+    createSecret: true
+
+  initializeOnce: true
+
+persistence:
+  enabled: true
+  storageClass: "standard"
+  accessMode: "ReadWriteOnce"
+  size: "8Gi"
+
+rbac:
+  create: true
+  readSecrets: false
+
+serviceAccount:
+  create: true
+  name: "jenkins-controller"
+  automountServiceAccountToken: true
+
+serviceAccountAgent:
+  create: true
+  name: "jenkins-deployer"
+  automountServiceAccountToken: true
+
+agent:
+  enabled: true
+  namespace: "jenkins"
+  useDefaultServiceAccount: true
+  serviceAccount: "jenkins-deployer"
+extraObjects:
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: jenkins-deployer
+      namespace: sentinel-dev
+    rules:
+      - apiGroups:
+          - ""
+        resources:
+          - configmaps
+          - secrets
+          - services
+          - serviceaccounts
+          - persistentvolumeclaims
+          - pods
+          - pods/log
+        verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+
+      - apiGroups:
+          - apps
+        resources:
+          - deployments
+          - replicasets
+          - statefulsets
+          - daemonsets
+        verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+
+      - apiGroups:
+          - rbac.authorization.k8s.io
+        resources:
+          - roles
+          - rolebindings
+        verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: jenkins-deployer
+      namespace: sentinel-dev
+    subjects:
+      - kind: ServiceAccount
+        name: jenkins-deployer
+        namespace: jenkins
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: jenkins-deployer
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: jenkins-deployer
+      namespace: sentinel-prod
+    rules:
+      - apiGroups:
+          - ""
+        resources:
+          - configmaps
+          - secrets
+          - services
+          - serviceaccounts
+          - persistentvolumeclaims
+          - pods
+          - pods/log
+        verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+
+      - apiGroups:
+          - apps
+        resources:
+          - deployments
+          - replicasets
+          - statefulsets
+          - daemonsets
+        verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+
+      - apiGroups:
+          - rbac.authorization.k8s.io
+        resources:
+          - roles
+          - rolebindings
+        verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: jenkins-deployer
+      namespace: sentinel-prod
+    subjects:
+      - kind: ServiceAccount
+        name: jenkins-deployer
+        namespace: jenkins
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: Role
+      name: jenkins-deployer

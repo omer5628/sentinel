@@ -1,0 +1,15 @@
+# Production overrides for Project Sentinel.
+
+api:
+  replicaCount: 3
+
+  triton:
+    grpcUrl: "clearml-serving-triton.default.svc.cluster.local:8001"
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"

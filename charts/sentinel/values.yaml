@@ -1,0 +1,212 @@
+# Default values for Project Sentinel.
+
+config:
+  logLevel: "INFO"
+
+rabbitmq:
+  port: "5672"
+  managementPort: "15672"
+
+  replicaCount: 1
+
+  image:
+    repository: rabbitmq
+    tag: "3-management"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+  persistence:
+    accessMode: ReadWriteOnce
+    size: "2Gi"
+
+redis:
+  port: "6379"
+
+  replicaCount: 1
+
+  image:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  persistence:
+    accessMode: ReadWriteOnce
+    size: "1Gi"
+
+postgres:
+  port: "5432"
+  database: "sentinel"
+
+  replicaCount: 1
+
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+  persistence:
+    accessMode: ReadWriteOnce
+    size: "2Gi"
+
+secrets:
+  existingSecret: "sentinel-service-secrets"
+
+registry:
+  existingPullSecret: ""
+
+api:
+  replicaCount: 1
+
+  image:
+    repository: omer5628/sentinel-api
+    tag: "v1.3"
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 8000
+
+  triton:
+    grpcUrl: "clearml-serving-triton:8001"
+    modelName: "sentinel-mnist_1"
+    modelVersion: "1"
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+  nodeAffinity:
+    type: "serving"
+
+worker:
+  replicaCount: 1
+
+  image:
+    repository: omer5628/sentinel-worker
+    tag: "v1.1"
+    pullPolicy: Always
+
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+prometheus:
+  replicaCount: 1
+
+  image:
+    repository: prom/prometheus
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  scrapeInterval: "15s"
+
+  service:
+    type: NodePort
+    port: 9090
+    nodePort: 30090
+
+  target:
+    service: sentinel-api
+    port: 8000
+    metricsPath: /metrics
+
+grafana:
+  replicaCount: 1
+
+  image:
+    repository: grafana/grafana
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: NodePort
+    port: 3000
+    nodePort: 30300
+
+  persistence:
+    accessMode: ReadWriteOnce
+    size: "1Gi"
+
+  admin:
+    existingSecret: "grafana-admin-credentials"
+    userKey: "admin-user"
+    passwordKey: "admin-password"
+
+  datasources:
+    prometheusUrl: "http://prometheus:9090"
+    lokiUrl: "http://loki:3100"
+    jaegerUrl: "http://jaeger:16686"
+
+jaeger:
+  replicaCount: 1
+
+  image:
+    repository: jaegertracing/all-in-one
+    tag: "latest"
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+
+  ports:
+    ui: 16686
+    otlpGrpc: 4317
+    otlpHttp: 4318
+
+loki:
+  replicaCount: 1
+
+  image:
+    repository: grafana/loki
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 3100
+
+  persistence:
+    accessMode: ReadWriteOnce
+    size: "2Gi"
+
+promtail:
+  image:
+    repository: grafana/promtail
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  serverPort: 9080
+
+  rbac:
+    create: true

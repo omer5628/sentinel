@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: grafana-dashboards
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: visualization
+    app.kubernetes.io/part-of: sentinel
+
+data:
+  sentinel-observability.json: |
+{{ .Files.Get "dashboards/sentinel-observability.json" | indent 4 }}

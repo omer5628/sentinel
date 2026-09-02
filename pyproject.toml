@@ -38,6 +38,7 @@ packages = ["src/sentinel"]
 
 [dependency-groups]
 dev = [
+    "kubernetes>=36.0.3",
     "matplotlib>=3.10.9",
     "pre-commit",
     "pyright",

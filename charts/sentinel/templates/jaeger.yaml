@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: jaeger
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  replicas: {{ .Values.jaeger.replicaCount }}
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger
+        app.kubernetes.io/component: tracing
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      containers:
+        - name: jaeger
+          image: "{{ .Values.jaeger.image.repository }}:{{ .Values.jaeger.image.tag }}"
+          imagePullPolicy: {{ .Values.jaeger.image.pullPolicy }}
+
+          ports:
+            - name: ui
+              containerPort: {{ .Values.jaeger.ports.ui }}
+
+            - name: otlp-grpc
+              containerPort: {{ .Values.jaeger.ports.otlpGrpc }}
+
+            - name: otlp-http
+              containerPort: {{ .Values.jaeger.ports.otlpHttp }}
+
+---
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: jaeger
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  type: {{ .Values.jaeger.service.type }}
+
+  selector:
+    app.kubernetes.io/name: jaeger
+
+  ports:
+    - name: ui
+      port: {{ .Values.jaeger.ports.ui }}
+      targetPort: ui
+
+    - name: otlp-grpc
+      port: {{ .Values.jaeger.ports.otlpGrpc }}
+      targetPort: otlp-grpc
+
+    - name: otlp-http
+      port: {{ .Values.jaeger.ports.otlpHttp }}
+      targetPort: otlp-http
