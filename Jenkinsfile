@@ -206,6 +206,32 @@ spec:
                 }
             }
         }
+
+        stage('Promote to Prod?') {
+            steps {
+                input(
+                    message: 'Deploy to Production?',
+                    ok: 'Yes, Deploy'
+                )
+            }
+        }
+
+        stage('Deploy Prod') {
+            steps {
+                container('helm') {
+                    sh '''
+                        helm upgrade --install sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-prod \
+                          -f charts/sentinel/values-prod.yaml \
+                          --set-string api.image.tag=${BUILD_NUMBER} \
+                          --set-string worker.image.tag=${BUILD_NUMBER} \
+                          --wait \
+                          --timeout 10m
+                    '''
+                }
+            }
+        }
     }
 
     post {

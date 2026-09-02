@@ -8,17 +8,21 @@
 
 Project Sentinel previously relied on manual Kubernetes deployment commands.
 
-Phase 5 requires a governed CI/CD process where deployments are executed automatically through a pipeline rather than manually from an engineer's terminal.
+Phase 5 requires a governed CI/CD process where deployments are executed through a controlled pipeline rather than manually from an engineer's terminal.
 
 The platform needs to support:
 
 * Automated testing.
+* License compliance validation.
 * Container image builds.
-* Security and compliance gates.
+* Container vulnerability scanning.
+* Image publishing.
 * Helm-based Kubernetes deployments.
+* Automatic deployment to development.
 * Manual approval before production deployment.
 * Kubernetes-based build agents.
 * Pipeline definitions stored in Git.
+* Namespace-scoped deployment permissions.
 
 ## Decision
 
@@ -28,7 +32,7 @@ Jenkins is deployed inside Kubernetes using the official Jenkins Helm chart.
 
 The Jenkins controller runs in the `jenkins` namespace and uses persistent storage for Jenkins configuration and job data.
 
-Pipeline workloads will run on Kubernetes agents instead of directly on the Jenkins controller.
+Pipeline workloads run on dynamic Kubernetes agents instead of directly on the Jenkins controller.
 
 Two Kubernetes ServiceAccounts are used:
 
@@ -37,9 +41,78 @@ Two Kubernetes ServiceAccounts are used:
 
 The `jenkins-deployer` ServiceAccount follows the principle of least privilege.
 
-It can manage the Kubernetes resources required to deploy Sentinel in the `default` namespace, but it does not receive cluster-admin privileges.
+It receives namespace-scoped deployment permissions in:
 
-Cluster-scoped Promtail RBAC remains a platform bootstrap responsibility and is not managed by the Jenkins deployment account.
+* `sentinel-dev`
+* `sentinel-prod`
+
+The pipeline automatically deploys successful builds to `sentinel-dev`.
+
+Deployment to `sentinel-prod` requires a Jenkins human approval gate before the production Helm deployment is executed.
+
+The production flow is:
+
+```text
+Test
+  ↓
+Compliance
+  ↓
+Build Images
+  ↓
+Security Scan
+  ↓
+Push Images
+  ↓
+Deploy Dev
+  ↓
+Human Approval
+  ↓
+Deploy Prod
+```
+
+Jenkins does not receive permission to create Kubernetes namespaces or cluster-wide RBAC resources.
+
+Creation of target namespaces and other cluster-scoped platform resources remains a platform bootstrap responsibility.
+
+Cluster-scoped Promtail RBAC also remains a platform bootstrap responsibility and is not managed by the Jenkins deployment account.
+
+The Jenkins deployment RBAC configuration is managed declaratively through:
+
+```text
+infra/jenkins/values.yaml
+```
+
+using the Jenkins Helm chart `extraObjects`.
+
+The previous standalone:
+
+```text
+infra/jenkins/deployer-rbac.yaml
+```
+
+is no longer used, avoiding multiple sources of truth for Jenkins deployment permissions.
+
+## Production Promotion
+
+Development deployments are automatic after all pipeline quality and security gates succeed.
+
+Production deployment requires explicit human approval using a Jenkins Declarative Pipeline `input` step.
+
+The approval gate protects deployment intent rather than replacing automated validation.
+
+A build cannot reach the production deployment stage unless:
+
+1. Tests succeed.
+2. License compliance succeeds.
+3. Container images build successfully.
+4. Trivy security scanning succeeds.
+5. Images are pushed successfully.
+6. Development deployment succeeds.
+7. A human explicitly approves production promotion.
+
+Production runtime secrets must already exist in the `sentinel-prod` namespace before deployment.
+
+Jenkins consumes those Kubernetes Secrets through the Sentinel Helm chart but does not embed secret values in the `Jenkinsfile`.
 
 ## Alternatives Considered
 
@@ -66,11 +139,14 @@ It is powerful for cloud-native pipelines but introduces more Kubernetes-specifi
 ### Positive
 
 * CI/CD infrastructure is self-hosted and fully controlled.
-* Jenkins can run dynamic build agents in Kubernetes.
-* Deployments can be automated using Helm.
-* Manual approval gates can be added before production.
-* Deployment permissions can be restricted using Kubernetes RBAC.
-* Pipeline configuration can be stored in Git using a `Jenkinsfile`.
+* Jenkins runs dynamic build agents in Kubernetes.
+* Development deployments are automated.
+* Production deployments require explicit human approval.
+* Helm provides consistent deployment packaging between environments.
+* Deployment permissions are isolated by Kubernetes namespace.
+* Jenkins does not require cluster-admin permissions.
+* Pipeline configuration is version controlled through the `Jenkinsfile`.
+* Jenkins RBAC has a single declarative source of truth.
 
 ### Negative
 
@@ -78,36 +154,47 @@ It is powerful for cloud-native pipelines but introduces more Kubernetes-specifi
 * Plugins and Jenkins versions must be managed.
 * Persistent storage is required for controller state.
 * Jenkins introduces additional infrastructure and security responsibilities.
+* Target namespaces and production secrets require separate bootstrap management.
+* Human approval can delay production deployment.
 
 ## Security
 
 The Jenkins deployment ServiceAccount is restricted to namespace-level permissions.
 
-It is allowed to manage resources required for Sentinel deployment in the `default` namespace.
+It can manage the Kubernetes resources required for Sentinel deployment inside:
+
+```text
+sentinel-dev
+sentinel-prod
+```
 
 It is explicitly not allowed to create cluster-wide RBAC resources such as `ClusterRole`.
 
-This follows the principle of least privilege.
+It is also not granted responsibility for creating deployment namespaces.
+
+This follows the principle of least privilege and limits the blast radius of a compromised Jenkins agent.
+
+Production secrets are stored as Kubernetes Secrets in the production namespace and are not stored directly in the `Jenkinsfile`.
 
 ## Validation
 
-The Jenkins controller must be running successfully:
+Verify that the Jenkins controller is running:
 
 ```bash
 kubectl get pods -n jenkins
 ```
 
-The Jenkins PVC must be bound:
+Verify that the Jenkins PVC is bound:
 
 ```bash
 kubectl get pvc -n jenkins
 ```
 
-The deployment ServiceAccount must be able to deploy applications:
+Verify development deployment permissions:
 
 ```bash
 kubectl auth can-i create deployments.apps \
-  --namespace default \
+  --namespace sentinel-dev \
   --as=system:serviceaccount:jenkins:jenkins-deployer
 ```
 
@@ -117,7 +204,35 @@ Expected result:
 yes
 ```
 
-The deployment ServiceAccount must not have permission to create cluster-wide RBAC resources:
+Verify production deployment permissions:
+
+```bash
+kubectl auth can-i create deployments.apps \
+  --namespace sentinel-prod \
+  --as=system:serviceaccount:jenkins:jenkins-deployer
+```
+
+Expected result:
+
+```text
+yes
+```
+
+Verify production Secret access:
+
+```bash
+kubectl auth can-i get secrets \
+  --namespace sentinel-prod \
+  --as=system:serviceaccount:jenkins:jenkins-deployer
+```
+
+Expected result:
+
+```text
+yes
+```
+
+Verify that cluster-wide RBAC remains denied:
 
 ```bash
 kubectl auth can-i create clusterroles.rbac.authorization.k8s.io \
@@ -129,3 +244,11 @@ Expected result:
 ```text
 no
 ```
+
+Finally, execute the Jenkins pipeline and verify that it pauses at:
+
+```text
+Promote to Prod?
+```
+
+Production deployment must not begin until a human explicitly approves the promotion.
