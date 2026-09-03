@@ -13,6 +13,13 @@ from sentinel.ui.repository import (
     has_recent_mnist_event,
 )
 
+from sentinel.ui.producer_controller import (
+    get_producer_pid,
+    is_producer_running,
+    start_producer,
+    stop_producer,
+)
+
 
 class EventResponse(BaseModel):
     """Represent one image processed by the Sentinel Worker."""
@@ -36,6 +43,11 @@ class SystemStatusResponse(BaseModel):
     queue_depth: int
     worker_consumers: int
 
+class ProducerControlResponse(BaseModel):
+    """Represent the managed Producer process state."""
+
+    running: bool
+    pid: int | None
 
 app = FastAPI(
     title="Sentinel UI API",
@@ -120,6 +132,53 @@ def get_system_status() -> SystemStatusResponse:
         worker_consumers=worker_consumers,
     )
 
+@app.get(
+    "/producer/status",
+    response_model=ProducerControlResponse,
+)
+def get_managed_producer_status() -> ProducerControlResponse:
+    """Return the managed Producer process state."""
+
+    return ProducerControlResponse(
+        running=is_producer_running(),
+        pid=get_producer_pid(),
+    )
+
+
+@app.post(
+    "/producer/start",
+    response_model=ProducerControlResponse,
+)
+def start_managed_producer() -> ProducerControlResponse:
+    """Start the managed Sentinel Producer."""
+
+    try:
+        pid = start_producer()
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(error),
+        ) from error
+
+    return ProducerControlResponse(
+        running=is_producer_running(),
+        pid=pid,
+    )
+
+
+@app.post(
+    "/producer/stop",
+    response_model=ProducerControlResponse,
+)
+def stop_managed_producer() -> ProducerControlResponse:
+    """Stop the managed Sentinel Producer."""
+
+    stop_producer()
+
+    return ProducerControlResponse(
+        running=is_producer_running(),
+        pid=get_producer_pid(),
+    )
 
 @app.get(
     "/events",

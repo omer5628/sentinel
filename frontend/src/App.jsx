@@ -13,6 +13,50 @@ const INITIAL_SYSTEM_STATUS = {
   worker_consumers: 0,
 }
 
+const INITIAL_PRODUCER_CONTROL = {
+  running: false,
+  pid: null,
+}
+
+const SERVICES = [
+  {
+    name: "Jenkins",
+    port: 8082,
+    icon: "/service-icons/jenkins.svg",
+    description: "CI/CD pipelines",
+  },
+  {
+    name: "Grafana",
+    port: 3000,
+    icon: "/service-icons/grafana.svg",
+    description: "Dashboards and observability",
+  },
+  {
+    name: "Prometheus",
+    port: 9090,
+    icon: "/service-icons/prometheus.svg",
+    description: "Metrics and PromQL",
+  },
+  {
+    name: "Jaeger",
+    port: 16686,
+    icon: "/service-icons/jaeger.svg",
+    description: "Distributed tracing",
+  },
+  {
+    name: "RabbitMQ",
+    port: 15672,
+    icon: "/service-icons/rabbitmq.svg",
+    description: "Message broker management",
+  },
+  {
+    name: "ClearML",
+    port: 8080,
+    icon: "/service-icons/clearml.svg",
+    description: "Experiments and model management",
+  },
+]
+
 
 function formatTimestamp(timestamp) {
   return new Date(timestamp).toLocaleString()
@@ -41,6 +85,27 @@ function getStatusClass(status) {
 }
 
 
+function getServiceUrl(port) {
+  const currentUrl = new URL(window.location.href)
+
+  if (currentUrl.hostname.startsWith("5173-")) {
+    currentUrl.hostname = currentUrl.hostname.replace(
+      /^5173-/,
+      `${port}-`
+    )
+
+    currentUrl.port = ""
+    currentUrl.pathname = "/"
+    currentUrl.search = ""
+    currentUrl.hash = ""
+
+    return currentUrl.toString()
+  }
+
+  return `http://localhost:${port}`
+}
+
+
 function App() {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
@@ -50,6 +115,18 @@ function App() {
     INITIAL_SYSTEM_STATUS
   )
   const [statusError, setStatusError] = useState(false)
+
+  const [producerControl, setProducerControl] = useState(
+    INITIAL_PRODUCER_CONTROL
+  )
+  const [producerAction, setProducerAction] = useState(null)
+  const [producerControlError, setProducerControlError] = useState(null)
+
+  const [theme, setTheme] = useState(() => {
+    return localStorage.getItem("sentinel-theme") ?? "light"
+  })
+
+  const [servicesOpen, setServicesOpen] = useState(false)
 
   useEffect(() => {
     let isActive = true
@@ -133,62 +210,346 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    let isActive = true
+
+    async function loadProducerControl() {
+      try {
+        const response = await fetch("/api/producer/status")
+
+        if (!response.ok) {
+          throw new Error(
+            `Failed to load Producer status: HTTP ${response.status}`
+          )
+        }
+
+        const data = await response.json()
+
+        if (isActive) {
+          setProducerControl(data)
+          setProducerControlError(null)
+        }
+      } catch (requestError) {
+        if (isActive) {
+          setProducerControlError(requestError.message)
+        }
+      }
+    }
+
+    loadProducerControl()
+
+    const intervalId = window.setInterval(
+      loadProducerControl,
+      2000
+    )
+
+    return () => {
+      isActive = false
+      window.clearInterval(intervalId)
+    }
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem(
+      "sentinel-theme",
+      theme
+    )
+  }, [theme])
+
+  async function controlProducer(action) {
+    setProducerAction(action)
+    setProducerControlError(null)
+
+    try {
+      const response = await fetch(
+        `/api/producer/${action}`,
+        {
+          method: "POST",
+        }
+      )
+
+      if (!response.ok) {
+        const errorData = await response.json()
+
+        throw new Error(
+          errorData.detail
+          ?? `Producer ${action} failed: HTTP ${response.status}`
+        )
+      }
+
+      const data = await response.json()
+
+      setProducerControl(data)
+    } catch (requestError) {
+      setProducerControlError(requestError.message)
+    } finally {
+      setProducerAction(null)
+    }
+  }
+
+  function toggleTheme() {
+    setTheme((currentTheme) => (
+      currentTheme === "light"
+        ? "dark"
+        : "light"
+    ))
+  }
+
   const displayedSystemStatus = statusError
     ? "unknown"
     : systemStatus.system
 
+  const producerActionName = producerControl.running
+    ? "stop"
+    : "start"
+
+  let producerButtonText = producerControl.running
+    ? "Stop"
+    : "Start"
+
+  let producerButtonIcon = producerControl.running
+    ? "■"
+    : "▶"
+
+  if (producerAction === "start") {
+    producerButtonText = "Starting..."
+    producerButtonIcon = "…"
+  }
+
+  if (producerAction === "stop") {
+    producerButtonText = "Stopping..."
+    producerButtonIcon = "…"
+  }
+
   return (
-    <div className="app">
+    <div
+      className={
+        `app ${theme === "dark" ? "dark-mode" : ""}`
+      }
+    >
       <header className="topbar">
-        <div>
-          <p className="eyebrow">MLOps Sentinel</p>
-          <h1>Processing Monitor</h1>
+        <div className="topbar-title">
+          <p className="eyebrow">
+            MLOps Sentinel
+          </p>
+
+          <h1>
+            Processing Monitor
+          </h1>
+
           <p className="subtitle">
             Live visibility into the Sentinel ingestion pipeline
           </p>
         </div>
 
-        <div className="system-status">
-          <span
-            className={
-              `status-dot ${getStatusClass(displayedSystemStatus)}`
-            }
-          />
-          {statusError
-            ? "Status Unavailable"
-            : `System ${formatStatus(systemStatus.system)}`}
+        <div className="topbar-actions">
+          <div className="action-bar">
+            <button
+              className={
+                `toolbar-button ${
+                  producerControl.running
+                    ? "producer-stop-mode"
+                    : "producer-start-mode"
+                }`
+              }
+              type="button"
+              disabled={producerAction !== null}
+              onClick={() => controlProducer(producerActionName)}
+            >
+              <span
+                className="toolbar-button-icon"
+                aria-hidden="true"
+              >
+                {producerButtonIcon}
+              </span>
+
+              <span>
+                {producerButtonText}
+              </span>
+            </button>
+
+            <button
+              className="toolbar-button services-button"
+              type="button"
+              onClick={() => setServicesOpen(true)}
+            >
+              <span
+                className="toolbar-button-icon"
+                aria-hidden="true"
+              >
+                ◫
+              </span>
+
+              <span>
+                Services
+              </span>
+            </button>
+
+            <button
+              className="toolbar-button theme-button"
+              type="button"
+              onClick={toggleTheme}
+              title={
+                theme === "light"
+                  ? "Switch to dark mode"
+                  : "Switch to light mode"
+              }
+              aria-label={
+                theme === "light"
+                  ? "Switch to dark mode"
+                  : "Switch to light mode"
+              }
+            >
+              <span
+                className="theme-icon"
+                aria-hidden="true"
+              >
+                {theme === "light" ? "☀" : "☾"}
+              </span>
+            </button>
+          </div>
+
+          <div className="system-status">
+            <span
+              className={
+                `status-dot ${getStatusClass(
+                  displayedSystemStatus
+                )}`
+              }
+            />
+
+            {statusError
+              ? "Status Unavailable"
+              : `System ${formatStatus(systemStatus.system)}`}
+          </div>
         </div>
       </header>
 
+      {servicesOpen && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={() => setServicesOpen(false)}
+        >
+          <div
+            className="services-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="services-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="services-modal-header">
+              <div>
+                <h2 id="services-title">
+                  Services
+                </h2>
+
+                <p>
+                  Open Sentinel platform services
+                </p>
+              </div>
+
+              <button
+                className="modal-close-button"
+                type="button"
+                onClick={() => setServicesOpen(false)}
+                aria-label="Close services"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="services-grid">
+              {SERVICES.map((service) => (
+                <a
+                  className="service-card"
+                  key={service.name}
+                  href={getServiceUrl(service.port)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <span className="service-logo">
+                    <img
+                      src={service.icon}
+                      alt=""
+                      aria-hidden="true"
+                    />
+                  </span>
+
+                  <span className="service-details">
+                    <strong>
+                      {service.name}
+                    </strong>
+
+                    <small>
+                      {service.description}
+                    </small>
+                  </span>
+
+                  <span
+                    className="service-open-icon"
+                    aria-hidden="true"
+                  >
+                    ↗
+                  </span>
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {producerControlError && (
+        <div className="topbar-control-error">
+          {producerControlError}
+        </div>
+      )}
+
       <main>
         <section className="pipeline-section">
-          <h2>Pipeline</h2>
+          <h2>
+            Pipeline
+          </h2>
 
           <div className="pipeline">
             <div className="pipeline-node">
               <span
                 className={
-                  `node-status ${getStatusClass(systemStatus.producer)}`
+                  `node-status ${getStatusClass(
+                    systemStatus.producer
+                  )}`
                 }
               />
+
               <div>
-                <strong>Producer</strong>
+                <strong>
+                  Producer
+                </strong>
+
                 <small>
                   {formatStatus(systemStatus.producer)}
                 </small>
               </div>
             </div>
 
-            <span className="arrow">→</span>
+            <span className="arrow">
+              →
+            </span>
 
             <div className="pipeline-node">
               <span
                 className={
-                  `node-status ${getStatusClass(systemStatus.rabbitmq)}`
+                  `node-status ${getStatusClass(
+                    systemStatus.rabbitmq
+                  )}`
                 }
               />
+
               <div>
-                <strong>RabbitMQ</strong>
+                <strong>
+                  RabbitMQ
+                </strong>
+
                 <small>
                   {formatStatus(systemStatus.rabbitmq)}
                   {" · "}
@@ -197,16 +558,24 @@ function App() {
               </div>
             </div>
 
-            <span className="arrow">→</span>
+            <span className="arrow">
+              →
+            </span>
 
             <div className="pipeline-node">
               <span
                 className={
-                  `node-status ${getStatusClass(systemStatus.worker)}`
+                  `node-status ${getStatusClass(
+                    systemStatus.worker
+                  )}`
                 }
               />
+
               <div>
-                <strong>Worker</strong>
+                <strong>
+                  Worker
+                </strong>
+
                 <small>
                   {formatStatus(systemStatus.worker)}
                   {" · "}
@@ -215,7 +584,9 @@ function App() {
               </div>
             </div>
 
-            <span className="arrow">→</span>
+            <span className="arrow">
+              →
+            </span>
 
             <div className="pipeline-node">
               <span
@@ -225,8 +596,12 @@ function App() {
                   )}`
                 }
               />
+
               <div>
-                <strong>Feature Store</strong>
+                <strong>
+                  Feature Store
+                </strong>
+
                 <small>
                   {formatStatus(systemStatus.feature_store)}
                 </small>
@@ -238,7 +613,10 @@ function App() {
         <section className="events-section">
           <div className="section-heading">
             <div>
-              <h2>Processed Images</h2>
+              <h2>
+                Processed Images
+              </h2>
+
               <p>
                 Latest images successfully processed by the Worker
               </p>
@@ -325,6 +703,7 @@ function App() {
                           <span
                             className="status-dot status-healthy"
                           />
+
                           {event.status}
                         </span>
                       </td>
