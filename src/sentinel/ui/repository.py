@@ -1,3 +1,4 @@
+
 import os
 from typing import Any
 from uuid import UUID
@@ -94,3 +95,43 @@ def fetch_event_image(
         return None
 
     return bytes(row[0])
+
+def check_postgres_connection() -> bool:
+    """Verify that the offline feature store is reachable."""
+
+    with create_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+
+            row = cursor.fetchone()
+
+    return row is not None and row[0] == 1
+
+
+def has_recent_mnist_event(
+    window_seconds: int = 10,
+) -> bool:
+    """Return whether a recent Producer MNIST event was processed."""
+
+    with create_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM feature_log
+                    WHERE image_id LIKE %s
+                      AND timestamp >= (
+                          NOW() - (%s * INTERVAL '1 second')
+                      )
+                )
+                """,
+                (
+                    "mnist-%",
+                    window_seconds,
+                ),
+            )
+
+            row = cursor.fetchone()
+
+    return row is not None and bool(row[0])

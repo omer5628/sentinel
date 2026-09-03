@@ -73,8 +73,26 @@ h2 {
   height: 9px;
   flex-shrink: 0;
   border-radius: 50%;
+}
+
+.status-healthy {
   background: #21b66f;
   box-shadow: 0 0 0 3px rgba(33, 182, 111, 0.13);
+}
+
+.status-idle {
+  background: #e6a23c;
+  box-shadow: 0 0 0 3px rgba(230, 162, 60, 0.14);
+}
+
+.status-error {
+  background: #d64545;
+  box-shadow: 0 0 0 3px rgba(214, 69, 69, 0.13);
+}
+
+.status-unknown {
+  background: #8c96a8;
+  box-shadow: 0 0 0 3px rgba(140, 150, 168, 0.13);
 }
 
 main {
