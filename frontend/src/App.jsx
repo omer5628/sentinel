@@ -14,6 +14,8 @@ function App() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
+    let isActive = true
+
     async function loadEvents() {
       try {
         const response = await fetch("/api/events?limit=100")
@@ -26,16 +28,32 @@ function App() {
 
         const data = await response.json()
 
-        setEvents(data)
-        setError(null)
+        if (isActive) {
+          setEvents(data)
+          setError(null)
+        }
       } catch (requestError) {
-        setError(requestError.message)
+        if (isActive) {
+          setError(requestError.message)
+        }
       } finally {
-        setLoading(false)
+        if (isActive) {
+          setLoading(false)
+        }
       }
     }
 
     loadEvents()
+
+    const intervalId = window.setInterval(
+      loadEvents,
+      2000
+    )
+
+    return () => {
+      isActive = false
+      window.clearInterval(intervalId)
+    }
   }, [])
 
   return (
