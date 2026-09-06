@@ -5,6 +5,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Literal
+from uuid import uuid4
 
 import httpx
 import numpy as np
@@ -18,6 +19,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
+from pika.exceptions import AMQPError
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -28,6 +30,8 @@ from pydantic import BaseModel, Field, ValidationError
 from redis import Redis
 
 from sentinel.logger import configure_logger
+from sentinel.schema.v1 import InferenceEventV1
+from sentinel.serving.inference_events import InferenceEventPublisher
 
 
 DEFAULT_REDIS_HOST = "localhost"
@@ -42,10 +46,18 @@ DEFAULT_CLEARML_TIMEOUT_SECONDS = 5.0
 DEFAULT_OTEL_ENDPOINT = "http://jaeger:4318/v1/traces"
 OTEL_SERVICE_NAME = "sentinel-api"
 
-FEATURE_SHAPE = (1, 1, 28, 28)
+FEATURE_SHAPE = (
+    1,
+    1,
+    28,
+    28,
+)
+
 FEATURE_DTYPE = np.float32
 
-logger = configure_logger("sentinel.api")
+logger = configure_logger(
+    "sentinel.api"
+)
 
 
 resource = Resource.create(
@@ -94,6 +106,14 @@ INFERENCE_LATENCY = Histogram(
     "Inference processing latency in seconds.",
     [
         "model",
+    ],
+)
+
+INFERENCE_EVENT_PUBLISHES = Counter(
+    "inference_event_publishes_total",
+    "Total number of inference event publish attempts.",
+    [
+        "status",
     ],
 )
 
@@ -158,7 +178,14 @@ class ApplicationState:
     """Store shared application resources."""
 
     redis_client: Redis | None = None
-    clearml_client: httpx.Client | None = None
+
+    clearml_client: (
+        httpx.Client | None
+    ) = None
+
+    inference_event_publisher: (
+        InferenceEventPublisher | None
+    ) = None
 
 
 application_state = ApplicationState()
@@ -269,6 +296,76 @@ def run_canary_inference(
     )
 
 
+def publish_inference_event(
+    image_id: str,
+    model_version: Literal[
+        "v1",
+        "v2",
+    ],
+    predicted_class: int,
+    confidence: float,
+) -> None:
+    """Publish a completed inference event without failing inference."""
+
+    publisher = (
+        application_state.inference_event_publisher
+    )
+
+    if publisher is None:
+        INFERENCE_EVENT_PUBLISHES.labels(
+            status="unavailable",
+        ).inc()
+
+        logger.error(
+            "Inference event publisher is unavailable."
+        )
+
+        return
+
+    try:
+        event = InferenceEventV1(
+            schema_version="v1",
+            inference_id=uuid4(),
+            image_id=image_id,
+            timestamp=time.time(),
+            model_version=model_version,
+            predicted_class=predicted_class,
+            confidence=confidence,
+        )
+
+        publisher.publish(
+            event
+        )
+
+    except (
+        AMQPError,
+        OSError,
+        ValidationError,
+    ) as error:
+        INFERENCE_EVENT_PUBLISHES.labels(
+            status="error",
+        ).inc()
+
+        logger.error(
+            "Inference event publish failed",
+            extra={
+                "structured_data": {
+                    "image_id": image_id,
+                    "model": model_version,
+                    "error": str(
+                        error
+                    ),
+                }
+            },
+        )
+
+        return
+
+    INFERENCE_EVENT_PUBLISHES.labels(
+        status="success",
+    ).inc()
+
+
 @asynccontextmanager
 async def lifespan(
     app: FastAPI,
@@ -285,13 +382,29 @@ async def lifespan(
         create_clearml_client()
     )
 
+    application_state.inference_event_publisher = (
+        InferenceEventPublisher()
+    )
+
     yield
 
-    if application_state.redis_client is not None:
+    if (
+        application_state.redis_client
+        is not None
+    ):
         application_state.redis_client.close()
 
-    if application_state.clearml_client is not None:
+    if (
+        application_state.clearml_client
+        is not None
+    ):
         application_state.clearml_client.close()
+
+    if (
+        application_state.inference_event_publisher
+        is not None
+    ):
+        application_state.inference_event_publisher.close()
 
     tracer_provider.shutdown()
 
@@ -302,7 +415,7 @@ app = FastAPI(
         "Thin real-time MNIST API using "
         "ClearML Serving Canary inference."
     ),
-    version="2.5.0",
+    version="2.6.0",
     lifespan=lifespan,
 )
 
@@ -412,7 +525,9 @@ def predict(
                 ),
             )
 
-        redis_key = f"feat:{image_id}"
+        redis_key = (
+            f"feat:{image_id}"
+        )
 
         with tracer.start_as_current_span(
             "redis_lookup"
@@ -725,6 +840,15 @@ def predict(
                     ),
                 }
             },
+        )
+
+        publish_inference_event(
+            image_id=image_id,
+            model_version=model_version,
+            predicted_class=predicted_class,
+            confidence=(
+                prediction_result.confidence
+            ),
         )
 
         return PredictionResponse(
