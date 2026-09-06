@@ -89,10 +89,8 @@ api:
     type: ClusterIP
     port: 8000
 
-  triton:
-    grpcUrl: "clearml-serving-triton:8001"
-    modelName: "sentinel-mnist_1"
-    modelVersion: "1"
+  serving:
+    canaryUrl: "http://clearml-serving-inference.default.svc.cluster.local:8080/serve/sentinel-mnist-canary"
 
   resources:
     requests:
