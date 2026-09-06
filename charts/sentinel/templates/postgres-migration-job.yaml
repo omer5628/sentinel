@@ -1,0 +1,104 @@
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: {{ .Release.Name }}-db-migrate-inference-log
+  labels:
+    app.kubernetes.io/name: postgres-migration
+    app.kubernetes.io/component: database-migration
+    app.kubernetes.io/part-of: sentinel
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
+spec:
+  backoffLimit: 3
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-migration
+        app.kubernetes.io/component: database-migration
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      restartPolicy: Never
+
+      containers:
+        - name: postgres-migration
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_DB
+
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_USER
+
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_PASSWORD
+
+          command:
+            - sh
+            - -c
+
+          args:
+            - |
+              set -eu
+
+              echo "Waiting for PostgreSQL..."
+
+              until pg_isready \
+                -h postgres-0.postgres-headless \
+                -p {{ .Values.postgres.port }} \
+                -U "$POSTGRES_USER" \
+                -d "$POSTGRES_DB"
+              do
+                sleep 2
+              done
+
+              echo "Running inference_log migration..."
+
+              psql \
+                -v ON_ERROR_STOP=1 \
+                -h postgres-0.postgres-headless \
+                -p {{ .Values.postgres.port }} \
+                -U "$POSTGRES_USER" \
+                -d "$POSTGRES_DB" <<'SQL'
+              CREATE TABLE IF NOT EXISTS inference_log (
+                  inference_id UUID PRIMARY KEY,
+                  image_id VARCHAR(200) NOT NULL,
+                  model_version VARCHAR(20) NOT NULL,
+                  predicted_class INTEGER NOT NULL,
+                  confidence DOUBLE PRECISION NOT NULL,
+                  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  CONSTRAINT chk_inference_model_version
+                      CHECK (model_version IN ('v1', 'v2')),
+                  CONSTRAINT chk_inference_predicted_class
+                      CHECK (predicted_class BETWEEN 0 AND 9),
+                  CONSTRAINT chk_inference_confidence
+                      CHECK (confidence BETWEEN 0.0 AND 1.0)
+              );
+
+              CREATE INDEX IF NOT EXISTS idx_inference_log_image_id
+                  ON inference_log (image_id);
+
+              CREATE INDEX IF NOT EXISTS idx_inference_log_model_version
+                  ON inference_log (model_version);
+
+              CREATE INDEX IF NOT EXISTS idx_inference_log_created_at
+                  ON inference_log (created_at);
+              SQL
+
+              echo "Database migration completed successfully."
