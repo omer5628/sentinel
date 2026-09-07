@@ -49,7 +49,12 @@ def test_successful_inference_acknowledges_message() -> None:
     )
 
     api_client.post.assert_called_once_with(
-        "/predict/mnist-123"
+        "/predict/mnist-123",
+        headers={
+            "X-Inference-Request-ID": str(
+                REQUEST_ID
+            ),
+        },
     )
 
     channel.basic_ack.assert_called_once_with(

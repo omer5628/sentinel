@@ -5,12 +5,12 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import numpy as np
 import redis
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Response, status
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     OTLPSpanExporter,
@@ -304,6 +304,7 @@ def publish_inference_event(
     ],
     predicted_class: int,
     confidence: float,
+    inference_id: UUID | None = None,
 ) -> None:
     """Publish a completed inference event without failing inference."""
 
@@ -325,7 +326,11 @@ def publish_inference_event(
     try:
         event = InferenceEventV1(
             schema_version="v1",
-            inference_id=uuid4(),
+            inference_id=(
+                inference_id
+                if inference_id is not None
+                else uuid4()
+            ),
             image_id=image_id,
             timestamp=time.time(),
             model_version=model_version,
@@ -486,6 +491,10 @@ def metrics() -> Response:
 )
 def predict(
     image_id: str,
+    inference_request_id: UUID | None = Header(
+        default=None,
+        alias="X-Inference-Request-ID",
+    ),
 ) -> PredictionResponse:
     """Run inference through the ClearML Canary endpoint."""
 
@@ -849,6 +858,7 @@ def predict(
             confidence=(
                 prediction_result.confidence
             ),
+            inference_id=inference_request_id,
         )
 
         return PredictionResponse(

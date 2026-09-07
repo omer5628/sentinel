@@ -95,7 +95,12 @@ def process_message(
 
     try:
         response = api_client.post(
-            f"/predict/{request.image_id}"
+            f"/predict/{request.image_id}",
+            headers={
+                "X-Inference-Request-ID": str(
+                    request.request_id
+                ),
+            },
         )
 
     except httpx.RequestError as error:
