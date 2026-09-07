@@ -648,7 +648,10 @@ function App() {
                     <th>Image ID</th>
                     <th>Event ID</th>
                     <th>Timestamp</th>
-                    <th>Model</th>
+                    <th>Feature Model</th>
+                    <th>Inference Model</th>
+                    <th>Prediction</th>
+                    <th>Confidence</th>
                     <th>Label</th>
                     <th>Status</th>
                   </tr>
@@ -660,12 +663,8 @@ function App() {
                       <td>
                         <img
                           className="real-image-preview"
-                          src={
-                            `/api/events/${event.event_id}/image`
-                          }
-                          alt={
-                            `Processed image ${event.image_id}`
-                          }
+                          src={`/api/events/${event.event_id}/image`}
+                          alt={`Processed image ${event.image_id}`}
                         />
                       </td>
 
@@ -688,6 +687,30 @@ function App() {
                         <span className="model-badge">
                           {event.model_version}
                         </span>
+                      </td>
+
+                      <td>
+                        {event.inference_model_version ? (
+                          <span className="model-badge">
+                            {event.inference_model_version}
+                          </span>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+
+                      <td>
+                        {event.predicted_class ?? (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+
+                      <td>
+                        {event.confidence != null ? (
+                          `${(event.confidence * 100).toFixed(1)}%`
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
                       </td>
 
                       <td>

@@ -56,13 +56,27 @@ def fetch_recent_events(
             cursor.execute(
                 """
                 SELECT
-                    event_id,
-                    image_id,
-                    timestamp,
-                    model_version,
-                    label
-                FROM feature_log
-                ORDER BY timestamp DESC
+                    feature.event_id,
+                    feature.image_id,
+                    feature.timestamp,
+                    feature.model_version,
+                    feature.label,
+                    inference.model_version AS inference_model_version,
+                    inference.predicted_class,
+                    inference.confidence
+                FROM feature_log AS feature
+                LEFT JOIN LATERAL (
+                    SELECT
+                        model_version,
+                        predicted_class,
+                        confidence
+                    FROM inference_log
+                    WHERE image_id = feature.image_id
+                    ORDER BY created_at DESC, inference_id DESC
+                    LIMIT 1
+                ) AS inference
+                    ON TRUE
+                ORDER BY feature.timestamp DESC
                 LIMIT %s
                 """,
                 (limit,),

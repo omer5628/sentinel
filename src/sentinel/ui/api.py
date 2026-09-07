@@ -28,6 +28,9 @@ class EventResponse(BaseModel):
     image_id: str
     timestamp: datetime
     model_version: str
+    inference_model_version: str | None
+    predicted_class: int | None
+    confidence: float | None
     label: str | None
     status: str = "processed"
 
@@ -180,6 +183,7 @@ def stop_managed_producer() -> ProducerControlResponse:
         pid=get_producer_pid(),
     )
 
+
 @app.get(
     "/events",
     response_model=list[EventResponse],
@@ -207,6 +211,9 @@ def get_events(
             image_id=row["image_id"],
             timestamp=row["timestamp"],
             model_version=row["model_version"],
+            inference_model_version=row["inference_model_version"],
+            predicted_class=row["predicted_class"],
+            confidence=row["confidence"],
             label=row["label"],
         )
         for row in rows
