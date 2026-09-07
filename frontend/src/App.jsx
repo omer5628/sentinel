@@ -108,6 +108,7 @@ function getServiceUrl(port) {
 
 function App() {
   const [events, setEvents] = useState([])
+  const [modelFilter, setModelFilter] = useState("all")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -321,6 +322,14 @@ function App() {
     producerButtonIcon = "…"
   }
 
+  const filteredEvents =
+    modelFilter === "all"
+      ? events
+      : events.filter(
+        (event) =>
+          event.inference_model_version === modelFilter
+      )
+
   return (
     <div
       className={
@@ -344,6 +353,16 @@ function App() {
 
         <div className="topbar-actions">
           <div className="action-bar">
+            <select
+              className="toolbar-button"
+              value={modelFilter}
+              onChange={(event) => setModelFilter(event.target.value)}
+              aria-label="Filter by inference model"
+            >
+              <option value="all">Models: All</option>
+              <option value="v1">Models: v1</option>
+              <option value="v2">Models: v2</option>
+            </select>
             <button
               className={
                 `toolbar-button ${
@@ -623,7 +642,7 @@ function App() {
             </div>
 
             <span className="event-count">
-              {events.length} events
+              {filteredEvents.length} events
             </span>
           </div>
 
@@ -648,7 +667,6 @@ function App() {
                     <th>Image ID</th>
                     <th>Event ID</th>
                     <th>Timestamp</th>
-                    <th>Feature Model</th>
                     <th>Inference Model</th>
                     <th>Prediction</th>
                     <th>Confidence</th>
@@ -658,7 +676,7 @@ function App() {
                 </thead>
 
                 <tbody>
-                  {events.map((event) => (
+                  {filteredEvents.map((event) => (
                     <tr key={event.event_id}>
                       <td>
                         <img
@@ -681,12 +699,6 @@ function App() {
 
                       <td>
                         {formatTimestamp(event.timestamp)}
-                      </td>
-
-                      <td>
-                        <span className="model-badge">
-                          {event.model_version}
-                        </span>
                       </td>
 
                       <td>
