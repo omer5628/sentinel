@@ -9,11 +9,18 @@ from sentinel.schema.v1 import InferenceRequestV1
 
 
 INFERENCE_REQUEST_QUEUE_NAME = "inference_requests"
+
 INFERENCE_REQUEST_DEAD_LETTER_EXCHANGE = "sentinel.dlx"
 INFERENCE_REQUEST_DEAD_LETTER_QUEUE = "inference_requests.dlq"
 INFERENCE_REQUEST_DEAD_LETTER_ROUTING_KEY = (
     "inference_requests.invalid"
 )
+
+INFERENCE_REQUEST_RETRY_QUEUE_NAME = (
+    "inference_requests.retry"
+)
+
+INFERENCE_REQUEST_RETRY_DELAY_MS = 5_000
 
 DEFAULT_RABBITMQ_HOST = "localhost"
 DEFAULT_RABBITMQ_PORT = 5672
@@ -76,6 +83,20 @@ def declare_inference_request_topology(
         queue=INFERENCE_REQUEST_DEAD_LETTER_QUEUE,
         exchange=INFERENCE_REQUEST_DEAD_LETTER_EXCHANGE,
         routing_key=INFERENCE_REQUEST_DEAD_LETTER_ROUTING_KEY,
+    )
+
+    channel.queue_declare(
+        queue=INFERENCE_REQUEST_RETRY_QUEUE_NAME,
+        durable=True,
+        arguments={
+            "x-message-ttl": (
+                INFERENCE_REQUEST_RETRY_DELAY_MS
+            ),
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": (
+                INFERENCE_REQUEST_QUEUE_NAME
+            ),
+        },
     )
 
     channel.queue_declare(

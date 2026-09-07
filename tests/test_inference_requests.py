@@ -6,6 +6,8 @@ from sentinel.consumers.inference_requests import (
     INFERENCE_REQUEST_DEAD_LETTER_QUEUE,
     INFERENCE_REQUEST_DEAD_LETTER_ROUTING_KEY,
     INFERENCE_REQUEST_QUEUE_NAME,
+    INFERENCE_REQUEST_RETRY_DELAY_MS,
+    INFERENCE_REQUEST_RETRY_QUEUE_NAME,
     InferenceRequestPublisher,
 )
 from sentinel.schema.v1 import InferenceRequestV1
@@ -51,11 +53,25 @@ def test_publish_inference_request() -> None:
         routing_key=INFERENCE_REQUEST_DEAD_LETTER_ROUTING_KEY,
     )
 
-    assert channel.queue_declare.call_count == 2
+    assert channel.queue_declare.call_count == 3
 
     channel.queue_declare.assert_any_call(
         queue=INFERENCE_REQUEST_DEAD_LETTER_QUEUE,
         durable=True,
+    )
+
+    channel.queue_declare.assert_any_call(
+        queue=INFERENCE_REQUEST_RETRY_QUEUE_NAME,
+        durable=True,
+        arguments={
+            "x-message-ttl": (
+                INFERENCE_REQUEST_RETRY_DELAY_MS
+            ),
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": (
+                INFERENCE_REQUEST_QUEUE_NAME
+            ),
+        },
     )
 
     channel.queue_declare.assert_any_call(
