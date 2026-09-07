@@ -3,11 +3,13 @@ import os
 
 import httpx
 from pika.adapters.blocking_connection import BlockingChannel
+from pika.exceptions import AMQPError
 from pika.spec import Basic, BasicProperties
 from pydantic import ValidationError
 
 from sentinel.consumers.inference_requests import (
     INFERENCE_REQUEST_QUEUE_NAME,
+    INFERENCE_REQUEST_RETRY_QUEUE_NAME,
     create_rabbitmq_connection,
     declare_inference_request_topology,
 )
@@ -16,6 +18,9 @@ from sentinel.schema.v1 import InferenceRequestV1
 
 DEFAULT_SENTINEL_API_URL = "http://localhost:8000"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
+
+MAX_RETRY_ATTEMPTS = 3
+RETRY_COUNT_HEADER = "x-sentinel-retry-count"
 
 RETRYABLE_HTTP_STATUS_CODES = {
     408,
@@ -60,6 +65,140 @@ def is_retryable_status(
     )
 
 
+def get_retry_count(
+    properties: BasicProperties,
+) -> int:
+    """Return the current automatic inference retry count."""
+
+    headers = properties.headers
+
+    if not isinstance(headers, dict):
+        return 0
+
+    retry_count = headers.get(
+        RETRY_COUNT_HEADER,
+        0,
+    )
+
+    if (
+        isinstance(retry_count, int)
+        and not isinstance(retry_count, bool)
+        and retry_count >= 0
+    ):
+        return retry_count
+
+    return 0
+
+
+def create_retry_properties(
+    properties: BasicProperties,
+    retry_count: int,
+) -> BasicProperties:
+    """Create persistent properties for a delayed retry."""
+
+    source_headers = properties.headers
+
+    if isinstance(source_headers, dict):
+        headers = dict(source_headers)
+    else:
+        headers = {}
+
+    headers[RETRY_COUNT_HEADER] = retry_count
+
+    content_type = properties.content_type
+
+    if not isinstance(content_type, str):
+        content_type = "application/json"
+
+    return BasicProperties(
+        content_type=content_type,
+        delivery_mode=2,
+        headers=headers,
+    )
+
+
+def schedule_retry(
+    channel: BlockingChannel,
+    delivery_tag: int,
+    body: bytes,
+    properties: BasicProperties,
+    request: InferenceRequestV1,
+) -> None:
+    """Schedule a delayed retry or dead-letter an exhausted request."""
+
+    current_retry_count = get_retry_count(
+        properties
+    )
+
+    if current_retry_count >= MAX_RETRY_ATTEMPTS:
+        logger.error(
+            "Automatic inference exhausted %s retries "
+            "for request %s and image %s. "
+            "Routing request to DLQ.",
+            MAX_RETRY_ATTEMPTS,
+            request.request_id,
+            request.image_id,
+        )
+
+        channel.basic_nack(
+            delivery_tag=delivery_tag,
+            requeue=False,
+        )
+
+        return
+
+    next_retry_count = (
+        current_retry_count + 1
+    )
+
+    retry_properties = create_retry_properties(
+        properties=properties,
+        retry_count=next_retry_count,
+    )
+
+    try:
+        channel.basic_publish(
+            exchange="",
+            routing_key=(
+                INFERENCE_REQUEST_RETRY_QUEUE_NAME
+            ),
+            body=body,
+            properties=retry_properties,
+        )
+
+    except (
+        AMQPError,
+        OSError,
+    ) as error:
+        logger.error(
+            "Failed to schedule automatic inference retry "
+            "for request %s and image %s: %s",
+            request.request_id,
+            request.image_id,
+            error,
+        )
+
+        channel.basic_nack(
+            delivery_tag=delivery_tag,
+            requeue=True,
+        )
+
+        return
+
+    channel.basic_ack(
+        delivery_tag=delivery_tag,
+    )
+
+    logger.warning(
+        "Scheduled automatic inference retry %s/%s "
+        "for request %s and image %s.",
+        next_retry_count,
+        MAX_RETRY_ATTEMPTS,
+        request.request_id,
+        request.image_id,
+    )
+
+
 def process_message(
     channel: BlockingChannel,
     method: Basic.Deliver,
@@ -68,8 +207,6 @@ def process_message(
     api_client: httpx.Client,
 ) -> None:
     """Validate an inference request and call the Sentinel API."""
-
-    del properties
 
     delivery_tag = method.delivery_tag
 
@@ -110,9 +247,12 @@ def process_message(
             error,
         )
 
-        channel.basic_nack(
+        schedule_retry(
+            channel=channel,
             delivery_tag=delivery_tag,
-            requeue=True,
+            body=body,
+            properties=properties,
+            request=request,
         )
 
         return
@@ -143,9 +283,20 @@ def process_message(
         retryable,
     )
 
+    if retryable:
+        schedule_retry(
+            channel=channel,
+            delivery_tag=delivery_tag,
+            body=body,
+            properties=properties,
+            request=request,
+        )
+
+        return
+
     channel.basic_nack(
         delivery_tag=delivery_tag,
-        requeue=retryable,
+        requeue=False,
     )
 
 
