@@ -9,6 +9,11 @@ from sentinel.schema.v1 import InferenceRequestV1
 
 
 INFERENCE_REQUEST_QUEUE_NAME = "inference_requests"
+INFERENCE_REQUEST_DEAD_LETTER_EXCHANGE = "sentinel.dlx"
+INFERENCE_REQUEST_DEAD_LETTER_QUEUE = "inference_requests.dlq"
+INFERENCE_REQUEST_DEAD_LETTER_ROUTING_KEY = (
+    "inference_requests.invalid"
+)
 
 DEFAULT_RABBITMQ_HOST = "localhost"
 DEFAULT_RABBITMQ_PORT = 5672
@@ -51,6 +56,42 @@ def create_rabbitmq_connection() -> pika.BlockingConnection:
     )
 
 
+def declare_inference_request_topology(
+    channel: BlockingChannel,
+) -> None:
+    """Declare inference request queues and dead-letter routing."""
+
+    channel.exchange_declare(
+        exchange=INFERENCE_REQUEST_DEAD_LETTER_EXCHANGE,
+        exchange_type="direct",
+        durable=True,
+    )
+
+    channel.queue_declare(
+        queue=INFERENCE_REQUEST_DEAD_LETTER_QUEUE,
+        durable=True,
+    )
+
+    channel.queue_bind(
+        queue=INFERENCE_REQUEST_DEAD_LETTER_QUEUE,
+        exchange=INFERENCE_REQUEST_DEAD_LETTER_EXCHANGE,
+        routing_key=INFERENCE_REQUEST_DEAD_LETTER_ROUTING_KEY,
+    )
+
+    channel.queue_declare(
+        queue=INFERENCE_REQUEST_QUEUE_NAME,
+        durable=True,
+        arguments={
+            "x-dead-letter-exchange": (
+                INFERENCE_REQUEST_DEAD_LETTER_EXCHANGE
+            ),
+            "x-dead-letter-routing-key": (
+                INFERENCE_REQUEST_DEAD_LETTER_ROUTING_KEY
+            ),
+        },
+    )
+
+
 class InferenceRequestPublisher:
     """Publish validated inference requests to RabbitMQ."""
 
@@ -86,9 +127,8 @@ class InferenceRequestPublisher:
             self.connection.channel()
         )
 
-        self.channel.queue_declare(
-            queue=INFERENCE_REQUEST_QUEUE_NAME,
-            durable=True,
+        declare_inference_request_topology(
+            self.channel
         )
 
         return self.channel
