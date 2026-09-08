@@ -69,14 +69,32 @@ spec:
                   name: sentinel-common-config
                   key: REDIS_PORT
 
-            - name: TRITON_GRPC_URL
-              value: {{ .Values.api.triton.grpcUrl | quote }}
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: RABBITMQ_HOST
 
-            - name: TRITON_MODEL_NAME
-              value: {{ .Values.api.triton.modelName | quote }}
+            - name: RABBITMQ_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: RABBITMQ_PORT
 
-            - name: TRITON_MODEL_VERSION
-              value: {{ .Values.api.triton.modelVersion | quote }}
+            - name: RABBITMQ_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: RABBITMQ_USERNAME
+
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: RABBITMQ_PASSWORD
+
+            - name: CLEARML_CANARY_URL
+              value: {{ .Values.api.serving.canaryUrl | quote }}
 
           readinessProbe:
             httpGet:

@@ -89,10 +89,8 @@ api:
     type: ClusterIP
     port: 8000
 
-  triton:
-    grpcUrl: "clearml-serving-triton:8001"
-    modelName: "sentinel-mnist_1"
-    modelVersion: "1"
+  serving:
+    canaryUrl: "http://clearml-serving-inference.default.svc.cluster.local:8080/serve/sentinel-mnist-canary"
 
   resources:
     requests:
@@ -108,6 +106,9 @@ api:
 worker:
   replicaCount: 1
 
+  autoInference:
+    enabled: false
+
   image:
     repository: omer5628/sentinel-worker
     tag: "v1.1"
@@ -120,6 +121,20 @@ worker:
     limits:
       cpu: "1"
       memory: "2Gi"
+
+inferenceRunner:
+  enabled: true
+  replicaCount: 1
+
+  apiUrl: "http://sentinel-api:8000"
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
 
 prometheus:
   replicaCount: 1
@@ -210,3 +225,14 @@ promtail:
 
   rbac:
     create: true
+
+inferenceLogger:
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

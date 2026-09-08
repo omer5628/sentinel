@@ -138,13 +138,72 @@ def build_test_pod(
 
     source_container = pod_spec.containers[0]
 
+    secret_name = os.getenv(
+        "INTEGRATION_SECRET_NAME",
+        DEFAULT_SECRET_NAME,
+    )
+
+    rabbitmq_host = os.getenv(
+        "INTEGRATION_RABBITMQ_HOST",
+        DEFAULT_RABBITMQ_HOST,
+    )
+
+    rabbitmq_port = os.getenv(
+        "INTEGRATION_RABBITMQ_PORT",
+        str(DEFAULT_RABBITMQ_PORT),
+    )
+
+    overridden_env_names = {
+        "RABBITMQ_HOST",
+        "RABBITMQ_PORT",
+        "RABBITMQ_USERNAME",
+        "RABBITMQ_PASSWORD",
+    }
+
+    test_env = [
+        env_var
+        for env_var in (source_container.env or [])
+        if env_var.name not in overridden_env_names
+    ]
+
+    test_env.extend(
+        [
+            client.V1EnvVar(
+                name="RABBITMQ_HOST",
+                value=rabbitmq_host,
+            ),
+            client.V1EnvVar(
+                name="RABBITMQ_PORT",
+                value=rabbitmq_port,
+            ),
+            client.V1EnvVar(
+                name="RABBITMQ_USERNAME",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(
+                        name=secret_name,
+                        key="RABBITMQ_USERNAME",
+                    )
+                ),
+            ),
+            client.V1EnvVar(
+                name="RABBITMQ_PASSWORD",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(
+                        name=secret_name,
+                        key="RABBITMQ_PASSWORD",
+                    )
+                ),
+            ),
+        ]
+    )
+
     test_container = client.V1Container(
         name="sentinel-api",
         image=image_name,
         image_pull_policy="Always",
         command=source_container.command,
         args=source_container.args,
-        env=source_container.env,
+        env=test_env,
         env_from=source_container.env_from,
         ports=source_container.ports,
         resources=source_container.resources,
@@ -177,6 +236,7 @@ def build_test_pod(
             volumes=pod_spec.volumes,
             dns_policy=pod_spec.dns_policy,
             dns_config=pod_spec.dns_config,
+            enable_service_links=False,
         ),
     )
 

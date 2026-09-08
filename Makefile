@@ -5,11 +5,11 @@
 	docker-persistence-check minikube-network-check \
 	check lint type-check test sync \
 	compose-up compose-build compose-down compose-restart compose-logs \
-	producer-local worker-local api-local \
+	producer-local worker-local api-local ui-api-local ui-frontend-local \
 	minikube-up minikube-stop minikube-delete \
 	k8s-apply k8s-observability-apply k8s-serving-deploy \
 	k8s-status k8s-worker-logs k8s-api-logs \
-	k8s-rabbitmq-forward producer-k8s \
+	k8s-rabbitmq-forward k8s-postgres-forward producer-k8s \
 	k8s-postgres-count \
 	grafana-dashboard-apply \
 	k8s-ports k8s-ports-stop
@@ -39,7 +39,9 @@ help:
 	@echo "Local development:"
 	@echo "  make producer-local          Start the producer locally"
 	@echo "  make worker-local            Start the worker locally"
-	@echo "  make api-local               Start the API locally"
+	@echo "  make api-local               Start the inference API locally"
+	@echo "  make ui-api-local            Start the Sentinel UI API on port 8001"
+	@echo "  make ui-frontend-local       Start the React/Vite UI on port 5173"
 	@echo ""
 	@echo "Minikube:"
 	@echo "  make minikube-up             Create or start Minikube"
@@ -55,6 +57,7 @@ help:
 	@echo "  make k8s-worker-logs         Follow Kubernetes worker logs"
 	@echo "  make k8s-api-logs            Follow Kubernetes API logs"
 	@echo "  make k8s-rabbitmq-forward    Forward localhost:5673 to RabbitMQ"
+	@echo "  make k8s-postgres-forward    Forward localhost:5433 to PostgreSQL"
 	@echo "  make producer-k8s            Send producer data to Kubernetes RabbitMQ"
 	@echo "  make k8s-postgres-count      Count rows in feature_log"
 	@echo ""
@@ -64,6 +67,7 @@ help:
 	@echo "Port forwarding:"
 	@echo "  make k8s-ports               Start all project port forwards"
 	@echo "  make k8s-ports-stop          Stop all project port forwards"
+	@echo ""
 	@echo "Backup:"
 	@echo "  make backup-runtime          Back up persistent runtime state"
 	@echo ""
@@ -142,10 +146,30 @@ api-local:
 		--host 0.0.0.0 \
 		--port 8000
 
+ui-api-local:
+	RABBITMQ_HOST=127.0.0.1 \
+	RABBITMQ_PORT=5673 \
+	RABBITMQ_USERNAME="$$(kubectl get secret sentinel-service-secrets \
+		-n sentinel-dev \
+		-o jsonpath='{.data.RABBITMQ_USERNAME}' | base64 -d)" \
+	RABBITMQ_PASSWORD="$$(kubectl get secret sentinel-service-secrets \
+		-n sentinel-dev \
+		-o jsonpath='{.data.RABBITMQ_PASSWORD}' | base64 -d)" \
+	POSTGRES_HOST=127.0.0.1 \
+	POSTGRES_PORT=5433 \
+	uv run uvicorn sentinel.ui.api:app \
+		--reload \
+		--host 0.0.0.0 \
+		--port 8001
+
+ui-frontend-local:
+	cd frontend && npm run dev -- --host 0.0.0.0
+
 
 # --------------------------------------------------------------------
 # Minikube
 # --------------------------------------------------------------------
+
 MINIKUBE_CPUS ?= 10
 MINIKUBE_MEMORY ?= 24576
 MINIKUBE_RESERVED_CPUS ?= 6
@@ -218,6 +242,9 @@ k8s-api-logs:
 k8s-rabbitmq-forward:
 	kubectl port-forward -n sentinel-dev service/rabbitmq 5673:5672
 
+k8s-postgres-forward:
+	kubectl port-forward -n sentinel-dev pod/postgres-0 5433:5432
+
 producer-k8s:
 	RABBITMQ_HOST=localhost \
 	RABBITMQ_PORT=5673 \
@@ -249,12 +276,15 @@ grafana-dashboard-apply:
 	kubectl rollout restart deployment/grafana
 	kubectl rollout status deployment/grafana
 
+
 # --------------------------------------------------------------------
 # Backup
 # --------------------------------------------------------------------
 
 backup-runtime:
 	@./scripts/backup_runtime_state.sh
+
+
 # --------------------------------------------------------------------
 # Port forwarding
 # --------------------------------------------------------------------
@@ -299,6 +329,10 @@ k8s-ports:
 		> /tmp/rabbitmq-management-port.log 2>&1 & \
 		echo $$! > /tmp/rabbitmq-management-port.pid
 
+	kubectl port-forward -n sentinel-dev pod/postgres-0 5433:5432 \
+		> /tmp/postgres-port.log 2>&1 & \
+		echo $$! > /tmp/postgres-port.pid
+
 	kubectl port-forward -n jenkins service/jenkins 8082:8080 \
 		> /tmp/jenkins-port.log 2>&1 & \
 		echo $$! > /tmp/jenkins-port.pid
@@ -310,11 +344,12 @@ k8s-ports:
 	@echo "  Grafana:             http://localhost:3000"
 	@echo "  Prometheus:          http://localhost:9090"
 	@echo "  Jaeger:              http://localhost:16686"
-	@echo "  Loki:                http://localhost:3100"
+	@echo "  Loki:                 http://localhost:3100"
 	@echo "  ClearML Serving:     http://localhost:18080"
 	@echo "  Triton HTTP:         http://localhost:18000"
 	@echo "  RabbitMQ AMQP:       localhost:5673"
 	@echo "  RabbitMQ Management: http://localhost:15672"
+	@echo "  PostgreSQL:          localhost:5433"
 	@echo "  Jenkins:             http://localhost:8082"
 	@echo ""
 	@echo "ClearML Server runs separately:"
@@ -334,6 +369,7 @@ k8s-ports-stop:
 		/tmp/triton-port.pid \
 		/tmp/rabbitmq-amqp-port.pid \
 		/tmp/rabbitmq-management-port.pid \
+		/tmp/postgres-port.pid \
 		/tmp/jenkins-port.pid; do \
 		if [ -f "$$file" ]; then \
 			kill "$$(cat "$$file")" 2>/dev/null || true; \
@@ -355,7 +391,8 @@ k8s-ports-stop:
 		 $$4 == "service/clearml-serving-inference" || \
 		 $$4 == "deployment/clearml-serving-triton" || \
 		 $$4 == "service/rabbitmq" || \
-		 $$4 ~ /^pod\/rabbitmq-/)) || \
+		 $$4 ~ /^pod\/rabbitmq-/ || \
+		 $$4 ~ /^pod\/postgres-/)) || \
 		($$2 == "kubectl" && $$3 == "port-forward" && \
 		 $$4 == "-n" && $$5 == "jenkins" && \
 		 $$6 == "service/jenkins") \
@@ -363,6 +400,10 @@ k8s-ports-stop:
 		| xargs -r kill 2>/dev/null || true
 	@echo "Port forwards stopped."
 
+
+# --------------------------------------------------------------------
+# System
+# --------------------------------------------------------------------
 
 system-up:
 	@echo "Starting Sentinel system..."

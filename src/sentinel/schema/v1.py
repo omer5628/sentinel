@@ -106,3 +106,63 @@ class ImageMessageV1(BaseModel):
             ) from error
 
         return encoded_image
+
+
+class InferenceRequestV1(BaseModel):
+    """Define the version 1 contract for inference requests."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        frozen=True,
+    )
+
+    schema_version: Literal["v1"]
+
+    request_id: UUID
+
+    image_id: str = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+    timestamp: float = Field(
+        gt=0,
+    )
+
+
+class InferenceEventV1(BaseModel):
+    """Define the version 1 contract for completed inference events."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        frozen=True,
+    )
+
+    schema_version: Literal["v1"]
+    inference_id: UUID
+
+    image_id: str = Field(
+        min_length=1,
+        max_length=200,
+    )
+
+    timestamp: float = Field(
+        gt=0,
+    )
+
+    model_version: Literal[
+        "v1",
+        "v2",
+    ]
+
+    predicted_class: int = Field(
+        ge=0,
+        le=9,
+    )
+
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )

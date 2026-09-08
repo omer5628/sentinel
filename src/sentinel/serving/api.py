@@ -4,11 +4,13 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
+from uuid import UUID, uuid4
 
+import httpx
 import numpy as np
 import redis
-from fastapi import FastAPI, HTTPException, Response, status
+from fastapi import FastAPI, Header, HTTPException, Response, status
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     OTLPSpanExporter,
@@ -17,32 +19,45 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Status, StatusCode
+from pika.exceptions import AMQPError
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
     Histogram,
     generate_latest,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 from redis import Redis
 
 from sentinel.logger import configure_logger
-from sentinel.serving.inference_client import TritonInferenceClient
+from sentinel.schema.v1 import InferenceEventV1
+from sentinel.serving.inference_events import InferenceEventPublisher
 
 
 DEFAULT_REDIS_HOST = "localhost"
 DEFAULT_REDIS_PORT = 6379
 
+DEFAULT_CLEARML_CANARY_URL = (
+    "http://clearml-serving-inference.default.svc.cluster.local:8080"
+    "/serve/sentinel-mnist-canary"
+)
+DEFAULT_CLEARML_TIMEOUT_SECONDS = 5.0
+
 DEFAULT_OTEL_ENDPOINT = "http://jaeger:4318/v1/traces"
 OTEL_SERVICE_NAME = "sentinel-api"
 
-FEATURE_SHAPE = (1, 1, 28, 28)
+FEATURE_SHAPE = (
+    1,
+    1,
+    28,
+    28,
+)
+
 FEATURE_DTYPE = np.float32
 
-MODEL_V1_NAME = "sentinel-mnist_1"
-MODEL_V2_NAME = "sentinel-mnist_2"
-
-logger = configure_logger("sentinel.api")
+logger = configure_logger(
+    "sentinel.api"
+)
 
 
 resource = Resource.create(
@@ -94,6 +109,14 @@ INFERENCE_LATENCY = Histogram(
     ],
 )
 
+INFERENCE_EVENT_PUBLISHES = Counter(
+    "inference_event_publishes_total",
+    "Total number of inference event publish attempts.",
+    [
+        "status",
+    ],
+)
+
 
 CLASS_NAMES = {
     0: "0",
@@ -109,25 +132,72 @@ CLASS_NAMES = {
 }
 
 
+class ClearMLPrediction(BaseModel):
+    """Represent a prediction returned by ClearML Serving."""
+
+    predicted_class: int = Field(
+        ge=0,
+        le=9,
+    )
+
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    model_version: Literal[
+        "v1",
+        "v2",
+    ]
+
+
 class PredictionResponse(BaseModel):
-    """Represent a successful model prediction."""
+    """Represent a successful Sentinel prediction."""
 
     image_id: str
-    predicted_class: int
+
+    predicted_class: int = Field(
+        ge=0,
+        le=9,
+    )
+
     predicted_label: str
-    confidence: float
-    model_version: str
+
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    model_version: Literal[
+        "v1",
+        "v2",
+    ]
 
 
 class ApplicationState:
     """Store shared application resources."""
 
     redis_client: Redis | None = None
-    inference_client_v1: TritonInferenceClient | None = None
-    inference_client_v2: TritonInferenceClient | None = None
+
+    clearml_client: (
+        httpx.Client | None
+    ) = None
+
+    inference_event_publisher: (
+        InferenceEventPublisher | None
+    ) = None
 
 
 application_state = ApplicationState()
+
+
+def get_clearml_canary_url() -> str:
+    """Return the configured ClearML Canary endpoint."""
+
+    return os.getenv(
+        "CLEARML_CANARY_URL",
+        DEFAULT_CLEARML_CANARY_URL,
+    )
 
 
 def create_redis_client() -> Redis:
@@ -152,23 +222,21 @@ def create_redis_client() -> Redis:
     return client
 
 
-def create_inference_client(
-    model_name: str,
-) -> TritonInferenceClient:
-    """Create and verify a Triton inference client."""
+def create_clearml_client() -> httpx.Client:
+    """Create a reusable ClearML Serving HTTP client."""
 
-    client = TritonInferenceClient(
-        model_name=model_name,
+    timeout_seconds = float(
+        os.getenv(
+            "CLEARML_TIMEOUT_SECONDS",
+            str(
+                DEFAULT_CLEARML_TIMEOUT_SECONDS
+            ),
+        )
     )
 
-    if not client.is_ready():
-        client.close()
-
-        raise RuntimeError(
-            f"Triton model '{model_name}' is not ready."
-        )
-
-    return client
+    return httpx.Client(
+        timeout=timeout_seconds,
+    )
 
 
 def deserialize_feature(
@@ -182,7 +250,9 @@ def deserialize_feature(
     )
 
     expected_size = int(
-        np.prod(FEATURE_SHAPE)
+        np.prod(
+            FEATURE_SHAPE
+        )
     )
 
     if feature_array.size != expected_size:
@@ -196,143 +266,109 @@ def deserialize_feature(
     ).copy()
 
 
-def run_shadow_inference(
+def run_canary_inference(
     feature_array: np.ndarray,
+) -> ClearMLPrediction:
+    """Send an inference request through the ClearML Canary endpoint."""
+
+    clearml_client = (
+        application_state.clearml_client
+    )
+
+    if clearml_client is None:
+        raise RuntimeError(
+            "ClearML Serving client is not initialized."
+        )
+
+    response = clearml_client.post(
+        get_clearml_canary_url(),
+        json={
+            "pixels": feature_array.tolist(),
+        },
+    )
+
+    response.raise_for_status()
+
+    response_data = response.json()
+
+    return ClearMLPrediction.model_validate(
+        response_data
+    )
+
+
+def publish_inference_event(
+    image_id: str,
+    model_version: Literal[
+        "v1",
+        "v2",
+    ],
+    predicted_class: int,
+    confidence: float,
+    inference_id: UUID | None = None,
 ) -> None:
-    """Run V2 shadow inference without affecting the user response."""
+    """Publish a completed inference event without failing inference."""
 
-    with tracer.start_as_current_span(
-        "v2_shadow_inference"
-    ) as span:
-        span.set_attribute(
-            "ml.model.version",
-            "v2",
-        )
+    publisher = (
+        application_state.inference_event_publisher
+    )
 
-        inference_client_v2 = (
-            application_state.inference_client_v2
-        )
-
-        if inference_client_v2 is None:
-            INFERENCE_REQUESTS.labels(
-                model="v2",
-                status="unavailable",
-            ).inc()
-
-            span.set_status(
-                Status(
-                    StatusCode.ERROR,
-                    "V2 inference client unavailable",
-                )
-            )
-
-            logger.error(
-                "shadow_model=v2 status=unavailable"
-            )
-
-            return
-
-        start_time = time.perf_counter()
-
-        try:
-            prediction_result = (
-                inference_client_v2.predict(
-                    feature_array
-                )
-            )
-
-        except (
-            RuntimeError,
-            ValueError,
-        ) as error:
-            elapsed_seconds = (
-                time.perf_counter()
-                - start_time
-            )
-
-            INFERENCE_LATENCY.labels(
-                model="v1",
-            ).observe(
-                elapsed_seconds
-            )
-
-            INFERENCE_REQUESTS.labels(
-                model="v2",
-                status="error",
-            ).inc()
-
-            span.record_exception(
-                error
-            )
-
-            span.set_status(
-                Status(
-                    StatusCode.ERROR,
-                    str(error),
-                )
-            )
-
-            span.set_attribute(
-                "inference.latency_ms",
-                elapsed_seconds * 1000,
-            )
-
-            logger.error(
-                "shadow_model=v2 status=error "
-                "latency_ms=%.3f error=%s",
-                elapsed_seconds * 1000,
-                error,
-            )
-
-            return
-
-        elapsed_seconds = (
-            time.perf_counter()
-            - start_time
-        )
-
-        INFERENCE_LATENCY.labels(
-            model="v2",
-        ).observe(
-            elapsed_seconds
-        )
-
-        INFERENCE_REQUESTS.labels(
-            model="v2",
-            status="success",
+    if publisher is None:
+        INFERENCE_EVENT_PUBLISHES.labels(
+            status="unavailable",
         ).inc()
 
-        span.set_attribute(
-            "inference.latency_ms",
-            elapsed_seconds * 1000,
+        logger.error(
+            "Inference event publisher is unavailable."
         )
 
-        span.set_attribute(
-            "inference.predicted_class",
-            prediction_result.predicted_class,
-        )
+        return
 
-        span.set_attribute(
-            "inference.confidence",
-            prediction_result.confidence,
-        )
-
-        span.set_status(
-            Status(
-                StatusCode.OK
-            )
-        )
-
-        logger.info(
-            (
-                "shadow_model=v2 status=success "
-                "latency_ms=%.3f predicted_class=%d "
-                "confidence=%.6f"
+    try:
+        event = InferenceEventV1(
+            schema_version="v1",
+            inference_id=(
+                inference_id
+                if inference_id is not None
+                else uuid4()
             ),
-            elapsed_seconds * 1000,
-            prediction_result.predicted_class,
-            prediction_result.confidence,
+            image_id=image_id,
+            timestamp=time.time(),
+            model_version=model_version,
+            predicted_class=predicted_class,
+            confidence=confidence,
         )
+
+        publisher.publish(
+            event
+        )
+
+    except (
+        AMQPError,
+        OSError,
+        ValidationError,
+    ) as error:
+        INFERENCE_EVENT_PUBLISHES.labels(
+            status="error",
+        ).inc()
+
+        logger.error(
+            "Inference event publish failed",
+            extra={
+                "structured_data": {
+                    "image_id": image_id,
+                    "model": model_version,
+                    "error": str(
+                        error
+                    ),
+                }
+            },
+        )
+
+        return
+
+    INFERENCE_EVENT_PUBLISHES.labels(
+        status="success",
+    ).inc()
 
 
 @asynccontextmanager
@@ -343,30 +379,37 @@ async def lifespan(
 
     del app
 
-    application_state.redis_client = create_redis_client()
-
-    application_state.inference_client_v1 = (
-        create_inference_client(
-            model_name=MODEL_V1_NAME,
-        )
+    application_state.redis_client = (
+        create_redis_client()
     )
 
-    application_state.inference_client_v2 = (
-        create_inference_client(
-            model_name=MODEL_V2_NAME,
-        )
+    application_state.clearml_client = (
+        create_clearml_client()
+    )
+
+    application_state.inference_event_publisher = (
+        InferenceEventPublisher()
     )
 
     yield
 
-    if application_state.redis_client is not None:
+    if (
+        application_state.redis_client
+        is not None
+    ):
         application_state.redis_client.close()
 
-    if application_state.inference_client_v1 is not None:
-        application_state.inference_client_v1.close()
+    if (
+        application_state.clearml_client
+        is not None
+    ):
+        application_state.clearml_client.close()
 
-    if application_state.inference_client_v2 is not None:
-        application_state.inference_client_v2.close()
+    if (
+        application_state.inference_event_publisher
+        is not None
+    ):
+        application_state.inference_event_publisher.close()
 
     tracer_provider.shutdown()
 
@@ -374,10 +417,10 @@ async def lifespan(
 app = FastAPI(
     title="Sentinel Serving API",
     description=(
-        "Thin real-time MNIST API with "
-        "V1 production inference and V2 shadow inference."
+        "Thin real-time MNIST API using "
+        "ClearML Serving Canary inference."
     ),
-    version="2.4.0",
+    version="2.6.0",
     lifespan=lifespan,
 )
 
@@ -386,48 +429,50 @@ app = FastAPI(
 def live() -> dict[str, str]:
     """Return the process liveness status."""
 
-    return {"status": "alive"}
+    return {
+        "status": "alive",
+    }
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     """Return the readiness status of API dependencies."""
 
-    redis_client = application_state.redis_client
-    inference_client_v1 = application_state.inference_client_v1
-    inference_client_v2 = application_state.inference_client_v2
+    redis_client = (
+        application_state.redis_client
+    )
+
+    clearml_client = (
+        application_state.clearml_client
+    )
 
     if (
         redis_client is None
-        or inference_client_v1 is None
-        or inference_client_v2 is None
+        or clearml_client is None
     ):
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="API dependencies are not initialized.",
+            status_code=(
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            ),
+            detail=(
+                "API dependencies are not initialized."
+            ),
         )
 
     try:
         redis_client.ping()
+
     except redis.RedisError as error:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            status_code=(
+                status.HTTP_503_SERVICE_UNAVAILABLE
+            ),
             detail="Redis is unavailable.",
         ) from error
 
-    if not inference_client_v1.is_ready():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Triton model V1 is unavailable.",
-        )
-
-    if not inference_client_v2.is_ready():
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Triton model V2 is unavailable.",
-        )
-
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+    }
 
 
 @app.get("/metrics")
@@ -446,8 +491,12 @@ def metrics() -> Response:
 )
 def predict(
     image_id: str,
+    inference_request_id: UUID | None = Header(
+        default=None,
+        alias="X-Inference-Request-ID",
+    ),
 ) -> PredictionResponse:
-    """Run V1 inference and mirror the request to V2."""
+    """Run inference through the ClearML Canary endpoint."""
 
     with tracer.start_as_current_span(
         "predict_request"
@@ -457,14 +506,17 @@ def predict(
             image_id,
         )
 
-        redis_client = application_state.redis_client
-        inference_client_v1 = (
-            application_state.inference_client_v1
+        redis_client = (
+            application_state.redis_client
+        )
+
+        clearml_client = (
+            application_state.clearml_client
         )
 
         if (
             redis_client is None
-            or inference_client_v1 is None
+            or clearml_client is None
         ):
             request_span.set_status(
                 Status(
@@ -482,7 +534,9 @@ def predict(
                 ),
             )
 
-        redis_key = f"feat:{image_id}"
+        redis_key = (
+            f"feat:{image_id}"
+        )
 
         with tracer.start_as_current_span(
             "redis_lookup"
@@ -498,8 +552,10 @@ def predict(
             )
 
             try:
-                feature_bytes = redis_client.get(
-                    redis_key
+                feature_bytes = (
+                    redis_client.get(
+                        redis_key
+                    )
                 )
 
             except redis.RedisError as error:
@@ -548,7 +604,9 @@ def predict(
             )
 
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
+                status_code=(
+                    status.HTTP_404_NOT_FOUND
+                ),
                 detail="Image not processed yet",
             )
 
@@ -573,8 +631,10 @@ def predict(
             )
 
         try:
-            feature_array = deserialize_feature(
-                feature_bytes
+            feature_array = (
+                deserialize_feature(
+                    feature_bytes
+                )
             )
 
         except ValueError as error:
@@ -599,36 +659,43 @@ def predict(
             ) from error
 
         with tracer.start_as_current_span(
-            "v1_model_inference"
+            "clearml_canary_inference"
         ) as inference_span:
             inference_span.set_attribute(
-                "ml.model.version",
-                "v1",
+                "clearml.endpoint",
+                "sentinel-mnist-canary",
             )
 
-            start_time = time.perf_counter()
+            start_time = (
+                time.perf_counter()
+            )
 
             try:
-                prediction_result_v1 = (
-                    inference_client_v1.predict(
+                prediction_result = (
+                    run_canary_inference(
                         feature_array
                     )
                 )
 
-            except RuntimeError as error:
+            except (
+                httpx.HTTPError,
+                ValidationError,
+                ValueError,
+                RuntimeError,
+            ) as error:
                 elapsed_seconds = (
                     time.perf_counter()
                     - start_time
                 )
 
                 INFERENCE_LATENCY.labels(
-                    model="v1",
+                    model="canary",
                 ).observe(
                     elapsed_seconds
                 )
 
                 INFERENCE_REQUESTS.labels(
-                    model="v1",
+                    model="canary",
                     status="error",
                 ).inc()
 
@@ -648,12 +715,31 @@ def predict(
                     )
                 )
 
+                logger.error(
+                    "Prediction error",
+                    extra={
+                        "structured_data": {
+                            "event": (
+                                "clearml_inference_failed"
+                            ),
+                            "image_id": image_id,
+                            "status": "error",
+                            "latency_seconds": (
+                                elapsed_seconds
+                            ),
+                            "error": str(
+                                error
+                            ),
+                        }
+                    },
+                )
+
                 raise HTTPException(
                     status_code=(
                         status.HTTP_503_SERVICE_UNAVAILABLE
                     ),
                     detail=(
-                        "Primary inference service failed."
+                        "ClearML Serving inference failed."
                     ),
                 ) from error
 
@@ -662,16 +748,25 @@ def predict(
                 - start_time
             )
 
+            model_version = (
+                prediction_result.model_version
+            )
+
             INFERENCE_LATENCY.labels(
-                model="v1",
+                model=model_version,
             ).observe(
                 elapsed_seconds
             )
 
             INFERENCE_REQUESTS.labels(
-                model="v1",
+                model=model_version,
                 status="success",
             ).inc()
+
+            inference_span.set_attribute(
+                "ml.model.version",
+                model_version,
+            )
 
             inference_span.set_attribute(
                 "inference.latency_ms",
@@ -680,12 +775,12 @@ def predict(
 
             inference_span.set_attribute(
                 "inference.predicted_class",
-                prediction_result_v1.predicted_class,
+                prediction_result.predicted_class,
             )
 
             inference_span.set_attribute(
                 "inference.confidence",
-                prediction_result_v1.confidence,
+                prediction_result.confidence,
             )
 
             inference_span.set_status(
@@ -694,35 +789,14 @@ def predict(
                 )
             )
 
-            logger.info(
-                "Prediction completed",
-                extra={
-                    "structured_data": {
-                        "image_id": image_id,
-                        "model": "v1",
-                        "predicted_class": (
-                            prediction_result_v1.predicted_class
-                        ),
-                        "confidence": (
-                            prediction_result_v1.confidence
-                        ),
-                        "latency_seconds": (
-                            elapsed_seconds
-                        ),
-                    }
-                },
-            )
-
-        run_shadow_inference(
-            feature_array=feature_array,
-        )
-
         predicted_class = (
-            prediction_result_v1.predicted_class
+            prediction_result.predicted_class
         )
 
-        predicted_label = CLASS_NAMES.get(
-            predicted_class
+        predicted_label = (
+            CLASS_NAMES.get(
+                predicted_class
+            )
         )
 
         if predicted_label is None:
@@ -743,6 +817,11 @@ def predict(
             )
 
         request_span.set_attribute(
+            "ml.model.version",
+            model_version,
+        )
+
+        request_span.set_attribute(
             "inference.predicted_class",
             predicted_class,
         )
@@ -753,12 +832,43 @@ def predict(
             )
         )
 
+        logger.info(
+            "Prediction completed",
+            extra={
+                "structured_data": {
+                    "image_id": image_id,
+                    "model": model_version,
+                    "predicted_class": (
+                        predicted_class
+                    ),
+                    "confidence": (
+                        prediction_result.confidence
+                    ),
+                    "latency_seconds": (
+                        elapsed_seconds
+                    ),
+                }
+            },
+        )
+
+        publish_inference_event(
+            image_id=image_id,
+            model_version=model_version,
+            predicted_class=predicted_class,
+            confidence=(
+                prediction_result.confidence
+            ),
+            inference_id=inference_request_id,
+        )
+
         return PredictionResponse(
             image_id=image_id,
             predicted_class=predicted_class,
             predicted_label=predicted_label,
-            confidence=prediction_result_v1.confidence,
-            model_version="v1",
+            confidence=(
+                prediction_result.confidence
+            ),
+            model_version=model_version,
         )
 
 
@@ -778,13 +888,18 @@ def main() -> None:
     """Handle command-line operations for the serving API."""
 
     parser = argparse.ArgumentParser(
-        description="Sentinel Serving API utilities."
+        description=(
+            "Sentinel Serving API utilities."
+        )
     )
 
     parser.add_argument(
         "--export-openapi",
         action="store_true",
-        help="Export the FastAPI OpenAPI specification as JSON.",
+        help=(
+            "Export the FastAPI OpenAPI "
+            "specification as JSON."
+        ),
     )
 
     args = parser.parse_args()

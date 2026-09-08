@@ -16,7 +16,14 @@ from pydantic import ValidationError
 from redis import Redis
 
 from sentinel.features import preprocess_image
-from sentinel.schema.v1 import ImageMessageV1
+from sentinel.schema.v1 import (
+    ImageMessageV1,
+    InferenceRequestV1,
+)
+
+from sentinel.consumers.inference_requests import (
+    InferenceRequestPublisher,
+)
 
 
 QUEUE_NAME = "video_stream"
@@ -45,6 +52,8 @@ DEFAULT_POSTGRES_DATABASE = "sentinel"
 DEFAULT_POSTGRES_USERNAME = "sentinel"
 DEFAULT_POSTGRES_PASSWORD = "sentinel"
 
+AUTO_INFERENCE_ENABLED_ENV = "AUTO_INFERENCE_ENABLED"
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -52,6 +61,21 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+def is_auto_inference_enabled() -> bool:
+    """Return whether automatic inference is enabled."""
+
+    value = os.getenv(
+        AUTO_INFERENCE_ENABLED_ENV,
+        "false",
+    )
+
+    return value.strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def create_rabbitmq_connection() -> pika.BlockingConnection:
@@ -407,6 +431,9 @@ def process_message(
     redis_client: Redis,
     postgres_writer: PostgresWriter,
     active_schema_versions: frozenset[str],
+    inference_request_publisher: (
+        InferenceRequestPublisher | None
+    ),
 ) -> None:
     """Validate and process one image message."""
 
@@ -491,7 +518,8 @@ def process_message(
 
     if postgres_written:
         logger.info(
-            "Processed event %s for image %s. Redis=success, PostgreSQL=success.",
+            "Processed event %s for image %s. "
+            "Redis=success, PostgreSQL=success.",
             event_id,
             image_id,
         )
@@ -501,6 +529,40 @@ def process_message(
             "Redis=success, PostgreSQL=failed.",
             event_id,
             image_id,
+        )
+
+    if (
+        inference_request_publisher is None
+        or not postgres_written
+    ):
+        return
+
+    try:
+        inference_request = InferenceRequestV1(
+            schema_version="v1",
+            request_id=message.event_id,
+            image_id=image_id,
+            timestamp=message.timestamp,
+        )
+
+        inference_request_publisher.publish(
+            inference_request
+        )
+
+        logger.info(
+            "Published automatic inference request "
+            "for event %s and image %s.",
+            event_id,
+            image_id,
+        )
+
+    except Exception as error:
+        logger.warning(
+            "Automatic inference request failed for event %s "
+            "and image %s. Ingestion remains successful: %s",
+            event_id,
+            image_id,
+            error,
         )
 
 
@@ -548,6 +610,23 @@ def run_worker() -> None:
             error,
         )
 
+    inference_request_publisher: (
+        InferenceRequestPublisher | None
+    ) = None
+
+    if is_auto_inference_enabled():
+        inference_request_publisher = (
+            InferenceRequestPublisher()
+        )
+
+        logger.info(
+            "Automatic inference is enabled."
+        )
+    else:
+        logger.info(
+            "Automatic inference is disabled."
+        )
+
     logger.info("Connecting to RabbitMQ.")
     rabbitmq_connection = create_rabbitmq_connection()
 
@@ -573,6 +652,9 @@ def run_worker() -> None:
             redis_client=redis_client,
             postgres_writer=postgres_writer,
             active_schema_versions=active_schema_versions,
+            inference_request_publisher=(
+                inference_request_publisher
+            ),
         )
 
     channel.basic_consume(
@@ -596,6 +678,9 @@ def run_worker() -> None:
             channel.stop_consuming()
 
     finally:
+        if inference_request_publisher is not None:
+            inference_request_publisher.close()
+
         postgres_writer.close()
         redis_client.close()
 

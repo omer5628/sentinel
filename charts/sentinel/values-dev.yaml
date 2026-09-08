@@ -1,9 +1,9 @@
 registry:
   existingPullSecret: ""
 
-api:
-  triton:
-    grpcUrl: "clearml-serving-triton.default.svc.cluster.local:8001"
+worker:
+  autoInference:
+    enabled: true
 
 prometheus:
   service:
