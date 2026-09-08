@@ -19,3 +19,5 @@ data:
   POSTGRES_HOST: "postgres-0.postgres-headless.{{ .Release.Namespace }}.svc.cluster.local"
   POSTGRES_PORT: {{ .Values.postgres.port | quote }}
   POSTGRES_DB: {{ .Values.postgres.database | quote }}
+
+  SENTINEL_API_URL: {{ .Values.inferenceRunner.apiUrl | quote }}

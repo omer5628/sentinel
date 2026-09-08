@@ -40,6 +40,9 @@ spec:
                   name: sentinel-common-config
                   key: LOG_LEVEL
 
+            - name: AUTO_INFERENCE_ENABLED
+              value: {{ .Values.worker.autoInference.enabled | quote }}
+
             - name: RABBITMQ_HOST
               valueFrom:
                 configMapKeyRef:
