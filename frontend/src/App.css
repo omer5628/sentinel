@@ -68,6 +68,7 @@ body {
   font-family: inherit;
   font-size: 13px;
   font-weight: 700;
+  text-decoration: none;
   cursor: pointer;
   transition:
     background 0.15s ease,
@@ -356,32 +357,6 @@ tbody tr:hover {
   font-size: 12px;
 }
 
-@media (max-width: 900px) {
-  .topbar {
-    align-items: flex-start;
-    flex-direction: column;
-    padding: 22px;
-  }
-
-  .topbar-actions {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .action-bar {
-    justify-content: flex-start;
-  }
-
-  main {
-    padding: 24px 18px;
-  }
-
-  .topbar-control-error {
-    padding-right: 22px;
-    padding-left: 22px;
-  }
-}
-
 .theme-button {
   min-width: 42px;
   width: 42px;
@@ -394,126 +369,20 @@ tbody tr:hover {
   line-height: 1;
 }
 
-/* Dark mode */
-
-.dark-mode {
-  color: #e7eaf0;
-  background: #11151c;
-}
-
-.dark-mode .topbar {
-  background: #171c25;
-  border-bottom-color: #2c3442;
-}
-
-.dark-mode .subtitle {
-  color: #99a3b4;
-}
-
-.dark-mode .system-status {
-  color: #e7eaf0;
-}
-
-.dark-mode .pipeline {
-  background: #171c25;
-  border-color: #303846;
-}
-
-.dark-mode .pipeline-node small {
-  color: #929cac;
-}
-
-.dark-mode .arrow {
-  color: #667085;
-}
-
-.dark-mode .table-wrapper {
-  background: #171c25;
-  border-color: #303846;
-}
-
-.dark-mode thead {
-  background: #1d2430;
-}
-
-.dark-mode th {
-  color: #a8b1c1;
-  border-bottom-color: #343d4c;
-}
-
-.dark-mode td {
-  color: #d9dee7;
-  border-bottom-color: #29313e;
-}
-
-.dark-mode tbody tr:hover {
-  background: #1c2330;
-}
-
-.dark-mode .muted {
-  color: #929cac;
-}
-
-.dark-mode .section-heading p {
-  color: #929cac;
-}
-
-.dark-mode .event-count {
-  color: #c6ccd7;
-  background: #262e3b;
-}
-
-.dark-mode .service-logo {
-  background: white;
-  border-color: #465164;
-}
-
-.dark-mode .message-box {
-  color: #b7c0ce;
-  background: #171c25;
-  border-color: #303846;
-}
-
-.dark-mode .toolbar-button {
-  color: #d4dae4;
-  background: #1b222d;
-  border-color: #394353;
-}
-
-.dark-mode .toolbar-button:hover:not(:disabled) {
-  background: #242d3a;
-}
-
-.dark-mode .producer-start-mode {
-  color: #69d09b;
-  border-color: #35634e;
-}
-
-.dark-mode .producer-stop-mode {
-  color: #ff8d83;
-  border-color: #70413e;
-}
-
-.dark-mode .model-badge {
-  color: #bbb5ff;
-  background: #302c54;
-}
-
-.dark-mode .unlabeled {
-  color: #e6b85c;
-}
-
-.dark-mode .processed-status {
-  color: #63cf98;
-}
-
-.dark-mode .theme-button {
-  color: #f3c969;
-}
-
 .services-button {
   min-width: 108px;
   color: #596274;
+}
+
+.labeling-button {
+  min-width: 108px;
+  color: #5147ce;
+  border-color: #d8d4ff;
+}
+
+.labeling-button:hover {
+  background: #f7f6ff;
+  border-color: #aaa4ff;
 }
 
 .modal-backdrop {
@@ -638,6 +507,133 @@ tbody tr:hover {
   font-size: 15px;
 }
 
+/* Dark mode */
+
+.dark-mode {
+  color: #e7eaf0;
+  background: #11151c;
+}
+
+.dark-mode .topbar {
+  background: #171c25;
+  border-bottom-color: #2c3442;
+}
+
+.dark-mode .subtitle {
+  color: #99a3b4;
+}
+
+.dark-mode .system-status {
+  color: #e7eaf0;
+}
+
+.dark-mode .pipeline {
+  background: #171c25;
+  border-color: #303846;
+}
+
+.dark-mode .pipeline-node small {
+  color: #929cac;
+}
+
+.dark-mode .arrow {
+  color: #667085;
+}
+
+.dark-mode .table-wrapper {
+  background: #171c25;
+  border-color: #303846;
+}
+
+.dark-mode thead {
+  background: #1d2430;
+}
+
+.dark-mode th {
+  color: #a8b1c1;
+  border-bottom-color: #343d4c;
+}
+
+.dark-mode td {
+  color: #d9dee7;
+  border-bottom-color: #29313e;
+}
+
+.dark-mode tbody tr:hover {
+  background: #1c2330;
+}
+
+.dark-mode .muted {
+  color: #929cac;
+}
+
+.dark-mode .section-heading p {
+  color: #929cac;
+}
+
+.dark-mode .event-count {
+  color: #c6ccd7;
+  background: #262e3b;
+}
+
+.dark-mode .service-logo {
+  background: white;
+  border-color: #465164;
+}
+
+.dark-mode .message-box {
+  color: #b7c0ce;
+  background: #171c25;
+  border-color: #303846;
+}
+
+.dark-mode .toolbar-button {
+  color: #d4dae4;
+  background: #1b222d;
+  border-color: #394353;
+}
+
+.dark-mode .toolbar-button:hover:not(:disabled) {
+  background: #242d3a;
+}
+
+.dark-mode .producer-start-mode {
+  color: #69d09b;
+  border-color: #35634e;
+}
+
+.dark-mode .producer-stop-mode {
+  color: #ff8d83;
+  border-color: #70413e;
+}
+
+.dark-mode .model-badge {
+  color: #bbb5ff;
+  background: #302c54;
+}
+
+.dark-mode .unlabeled {
+  color: #e6b85c;
+}
+
+.dark-mode .processed-status {
+  color: #63cf98;
+}
+
+.dark-mode .theme-button {
+  color: #f3c969;
+}
+
+.dark-mode .labeling-button {
+  color: #bbb5ff;
+  border-color: #4b4575;
+}
+
+.dark-mode .labeling-button:hover {
+  background: #302c54;
+  border-color: #655d94;
+}
+
 /* Services dark mode */
 
 .dark-mode .services-modal {
@@ -671,4 +667,33 @@ tbody tr:hover {
 .dark-mode .service-details small,
 .dark-mode .service-open-icon {
   color: #929cac;
+}
+
+@media (max-width: 900px) {
+  .topbar {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 22px;
+  }
+
+  .topbar-actions {
+    width: 100%;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .action-bar {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  main {
+    padding: 24px 18px;
+  }
+
+  .topbar-control-error {
+    padding-right: 22px;
+    padding-left: 22px;
+  }
 }

@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react"
 
 import "./App.css"
+import {
+  loadDarkModePreference,
+  saveDarkModePreference,
+} from "./theme.js"
 
 
 const INITIAL_SYSTEM_STATUS = {
@@ -121,11 +125,18 @@ function App() {
     INITIAL_PRODUCER_CONTROL
   )
   const [producerAction, setProducerAction] = useState(null)
-  const [producerControlError, setProducerControlError] = useState(null)
+  const [
+    producerControlError,
+    setProducerControlError,
+  ] = useState(null)
 
-  const [theme, setTheme] = useState(() => {
-    return localStorage.getItem("sentinel-theme") ?? "light"
-  })
+  const [theme, setTheme] = useState(
+    () => (
+      loadDarkModePreference()
+        ? "dark"
+        : "light"
+    )
+  )
 
   const [servicesOpen, setServicesOpen] = useState(false)
 
@@ -134,7 +145,9 @@ function App() {
 
     async function loadEvents() {
       try {
-        const response = await fetch("/api/events?limit=100")
+        const response = await fetch(
+          "/api/events?limit=100"
+        )
 
         if (!response.ok) {
           throw new Error(
@@ -216,7 +229,9 @@ function App() {
 
     async function loadProducerControl() {
       try {
-        const response = await fetch("/api/producer/status")
+        const response = await fetch(
+          "/api/producer/status"
+        )
 
         if (!response.ok) {
           throw new Error(
@@ -232,7 +247,9 @@ function App() {
         }
       } catch (requestError) {
         if (isActive) {
-          setProducerControlError(requestError.message)
+          setProducerControlError(
+            requestError.message
+          )
         }
       }
     }
@@ -249,13 +266,6 @@ function App() {
       window.clearInterval(intervalId)
     }
   }, [])
-
-  useEffect(() => {
-    localStorage.setItem(
-      "sentinel-theme",
-      theme
-    )
-  }, [theme])
 
   async function controlProducer(action) {
     setProducerAction(action)
@@ -282,35 +292,51 @@ function App() {
 
       setProducerControl(data)
     } catch (requestError) {
-      setProducerControlError(requestError.message)
+      setProducerControlError(
+        requestError.message
+      )
     } finally {
       setProducerAction(null)
     }
   }
 
   function toggleTheme() {
-    setTheme((currentTheme) => (
-      currentTheme === "light"
+    const nextTheme = (
+      theme === "light"
         ? "dark"
         : "light"
-    ))
+    )
+
+    setTheme(nextTheme)
+
+    saveDarkModePreference(
+      nextTheme === "dark"
+    )
   }
 
-  const displayedSystemStatus = statusError
-    ? "unknown"
-    : systemStatus.system
+  const displayedSystemStatus = (
+    statusError
+      ? "unknown"
+      : systemStatus.system
+  )
 
-  const producerActionName = producerControl.running
-    ? "stop"
-    : "start"
+  const producerActionName = (
+    producerControl.running
+      ? "stop"
+      : "start"
+  )
 
-  let producerButtonText = producerControl.running
-    ? "Stop"
-    : "Start"
+  let producerButtonText = (
+    producerControl.running
+      ? "Stop"
+      : "Start"
+  )
 
-  let producerButtonIcon = producerControl.running
-    ? "■"
-    : "▶"
+  let producerButtonIcon = (
+    producerControl.running
+      ? "■"
+      : "▶"
+  )
 
   if (producerAction === "start") {
     producerButtonText = "Starting..."
@@ -322,18 +348,25 @@ function App() {
     producerButtonIcon = "…"
   }
 
-  const filteredEvents =
+  const filteredEvents = (
     modelFilter === "all"
       ? events
       : events.filter(
-        (event) =>
-          event.inference_model_version === modelFilter
+        (event) => (
+          event.inference_model_version
+          === modelFilter
+        )
       )
+  )
 
   return (
     <div
       className={
-        `app ${theme === "dark" ? "dark-mode" : ""}`
+        `app ${
+          theme === "dark"
+            ? "dark-mode"
+            : ""
+        }`
       }
     >
       <header className="topbar">
@@ -356,41 +389,34 @@ function App() {
             <select
               className="toolbar-button"
               value={modelFilter}
-              onChange={(event) => setModelFilter(event.target.value)}
+              onChange={
+                (event) => (
+                  setModelFilter(
+                    event.target.value
+                  )
+                )
+              }
               aria-label="Filter by inference model"
             >
-              <option value="all">Models: All</option>
-              <option value="v1">Models: v1</option>
-              <option value="v2">Models: v2</option>
-            </select>
-            <button
-              className={
-                `toolbar-button ${
-                  producerControl.running
-                    ? "producer-stop-mode"
-                    : "producer-start-mode"
-                }`
-              }
-              type="button"
-              disabled={producerAction !== null}
-              onClick={() => controlProducer(producerActionName)}
-            >
-              <span
-                className="toolbar-button-icon"
-                aria-hidden="true"
-              >
-                {producerButtonIcon}
-              </span>
+              <option value="all">
+                Models: All
+              </option>
 
-              <span>
-                {producerButtonText}
-              </span>
-            </button>
+              <option value="v1">
+                Models: v1
+              </option>
+
+              <option value="v2">
+                Models: v2
+              </option>
+            </select>
 
             <button
               className="toolbar-button services-button"
               type="button"
-              onClick={() => setServicesOpen(true)}
+              onClick={
+                () => setServicesOpen(true)
+              }
             >
               <span
                 className="toolbar-button-icon"
@@ -403,6 +429,22 @@ function App() {
                 Services
               </span>
             </button>
+
+            <a
+              className="toolbar-button labeling-button"
+              href="/labeling"
+            >
+              <span
+                className="toolbar-button-icon"
+                aria-hidden="true"
+              >
+                ✓
+              </span>
+
+              <span>
+                Labeling
+              </span>
+            </a>
 
             <button
               className="toolbar-button theme-button"
@@ -426,6 +468,36 @@ function App() {
                 {theme === "light" ? "☀" : "☾"}
               </span>
             </button>
+
+            <button
+              className={
+                `toolbar-button ${
+                  producerControl.running
+                    ? "producer-stop-mode"
+                    : "producer-start-mode"
+                }`
+              }
+              type="button"
+              disabled={
+                producerAction !== null
+              }
+              onClick={
+                () => controlProducer(
+                  producerActionName
+                )
+              }
+            >
+              <span
+                className="toolbar-button-icon"
+                aria-hidden="true"
+              >
+                {producerButtonIcon}
+              </span>
+
+              <span>
+                {producerButtonText}
+              </span>
+            </button>
           </div>
 
           <div className="system-status">
@@ -439,7 +511,9 @@ function App() {
 
             {statusError
               ? "Status Unavailable"
-              : `System ${formatStatus(systemStatus.system)}`}
+              : `System ${formatStatus(
+                systemStatus.system
+              )}`}
           </div>
         </div>
       </header>
@@ -448,14 +522,20 @@ function App() {
         <div
           className="modal-backdrop"
           role="presentation"
-          onMouseDown={() => setServicesOpen(false)}
+          onMouseDown={
+            () => setServicesOpen(false)
+          }
         >
           <div
             className="services-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="services-title"
-            onMouseDown={(event) => event.stopPropagation()}
+            onMouseDown={
+              (event) => (
+                event.stopPropagation()
+              )
+            }
           >
             <div className="services-modal-header">
               <div>
@@ -471,7 +551,9 @@ function App() {
               <button
                 className="modal-close-button"
                 type="button"
-                onClick={() => setServicesOpen(false)}
+                onClick={
+                  () => setServicesOpen(false)
+                }
                 aria-label="Close services"
               >
                 ×
@@ -483,7 +565,11 @@ function App() {
                 <a
                   className="service-card"
                   key={service.name}
-                  href={getServiceUrl(service.port)}
+                  href={
+                    getServiceUrl(
+                      service.port
+                    )
+                  }
                   target="_blank"
                   rel="noreferrer"
                 >
@@ -546,7 +632,9 @@ function App() {
                 </strong>
 
                 <small>
-                  {formatStatus(systemStatus.producer)}
+                  {formatStatus(
+                    systemStatus.producer
+                  )}
                 </small>
               </div>
             </div>
@@ -570,7 +658,9 @@ function App() {
                 </strong>
 
                 <small>
-                  {formatStatus(systemStatus.rabbitmq)}
+                  {formatStatus(
+                    systemStatus.rabbitmq
+                  )}
                   {" · "}
                   Queue {systemStatus.queue_depth}
                 </small>
@@ -596,9 +686,13 @@ function App() {
                 </strong>
 
                 <small>
-                  {formatStatus(systemStatus.worker)}
+                  {formatStatus(
+                    systemStatus.worker
+                  )}
                   {" · "}
-                  Consumers {systemStatus.worker_consumers}
+                  Consumers {
+                    systemStatus.worker_consumers
+                  }
                 </small>
               </div>
             </div>
@@ -622,7 +716,9 @@ function App() {
                 </strong>
 
                 <small>
-                  {formatStatus(systemStatus.feature_store)}
+                  {formatStatus(
+                    systemStatus.feature_store
+                  )}
                 </small>
               </div>
             </div>
@@ -676,74 +772,109 @@ function App() {
                 </thead>
 
                 <tbody>
-                  {filteredEvents.map((event) => (
-                    <tr key={event.event_id}>
-                      <td>
-                        <img
-                          className="real-image-preview"
-                          src={`/api/events/${event.event_id}/image`}
-                          alt={`Processed image ${event.image_id}`}
-                        />
-                      </td>
-
-                      <td className="mono">
-                        {event.image_id}
-                      </td>
-
-                      <td
-                        className="mono muted"
-                        title={event.event_id}
-                      >
-                        {event.event_id}
-                      </td>
-
-                      <td>
-                        {formatTimestamp(event.timestamp)}
-                      </td>
-
-                      <td>
-                        {event.inference_model_version ? (
-                          <span className="model-badge">
-                            {event.inference_model_version}
-                          </span>
-                        ) : (
-                          <span className="muted">—</span>
-                        )}
-                      </td>
-
-                      <td>
-                        {event.predicted_class ?? (
-                          <span className="muted">—</span>
-                        )}
-                      </td>
-
-                      <td>
-                        {event.confidence != null ? (
-                          `${(event.confidence * 100).toFixed(1)}%`
-                        ) : (
-                          <span className="muted">—</span>
-                        )}
-                      </td>
-
-                      <td>
-                        {event.label ?? (
-                          <span className="unlabeled">
-                            Unlabeled
-                          </span>
-                        )}
-                      </td>
-
-                      <td>
-                        <span className="processed-status">
-                          <span
-                            className="status-dot status-healthy"
+                  {filteredEvents.map(
+                    (event) => (
+                      <tr key={event.event_id}>
+                        <td>
+                          <img
+                            className="real-image-preview"
+                            src={
+                              `/api/events/${event.event_id}/image`
+                            }
+                            alt={
+                              `Processed image ${event.image_id}`
+                            }
                           />
+                        </td>
 
-                          {event.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                        <td className="mono">
+                          {event.image_id}
+                        </td>
+
+                        <td
+                          className="mono muted"
+                          title={event.event_id}
+                        >
+                          {event.event_id}
+                        </td>
+
+                        <td>
+                          {formatTimestamp(
+                            event.timestamp
+                          )}
+                        </td>
+
+                        <td>
+                          {
+                            event.inference_model_version
+                              ? (
+                                <span className="model-badge">
+                                  {
+                                    event.inference_model_version
+                                  }
+                                </span>
+                              )
+                              : (
+                                <span className="muted">
+                                  —
+                                </span>
+                              )
+                          }
+                        </td>
+
+                        <td>
+                          {
+                            event.predicted_class
+                            ?? (
+                              <span className="muted">
+                                —
+                              </span>
+                            )
+                          }
+                        </td>
+
+                        <td>
+                          {
+                            event.confidence != null
+                              ? (
+                                `${(
+                                  event.confidence
+                                  * 100
+                                ).toFixed(1)}%`
+                              )
+                              : (
+                                <span className="muted">
+                                  —
+                                </span>
+                              )
+                          }
+                        </td>
+
+                        <td>
+                          {
+                            event.label
+                            ?? (
+                              <span className="unlabeled">
+                                Unlabeled
+                              </span>
+                            )
+                          }
+                        </td>
+
+                        <td>
+                          <span className="processed-status">
+                            <span
+                              className={
+                                "status-dot status-healthy"
+                              }
+                            />
+
+                            {event.status}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
@@ -753,5 +884,6 @@ function App() {
     </div>
   )
 }
+
 
 export default App

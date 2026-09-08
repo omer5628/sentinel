@@ -1,10 +1,27 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import './index.css'
-import App from './App.jsx'
+import { StrictMode } from "react"
+import { createRoot } from "react-dom/client"
 
-createRoot(document.getElementById('root')).render(
+import "./index.css"
+import App from "./App.jsx"
+import LabelingPage from "./LabelingPage.jsx"
+
+
+const normalizedPath = (
+  window.location.pathname.replace(/\/+$/, "")
+  || "/"
+)
+
+const page = (
+  normalizedPath === "/labeling"
+    ? <LabelingPage />
+    : <App />
+)
+
+
+createRoot(
+  document.getElementById("root")
+).render(
   <StrictMode>
-    <App />
+    {page}
   </StrictMode>,
 )
