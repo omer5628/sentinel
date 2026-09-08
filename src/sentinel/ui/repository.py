@@ -1,4 +1,3 @@
-
 import os
 from typing import Any
 from uuid import UUID
@@ -87,6 +86,108 @@ def fetch_recent_events(
     return [dict(row) for row in rows]
 
 
+def fetch_next_unlabeled_event() -> dict[str, Any] | None:
+    """Return the next processed event waiting for a human label."""
+
+    with create_postgres_connection() as connection:
+        with connection.cursor(
+            cursor_factory=RealDictCursor,
+        ) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    feature.event_id,
+                    feature.image_id,
+                    feature.timestamp,
+                    feature.model_version,
+                    inference.model_version AS inference_model_version,
+                    inference.predicted_class,
+                    inference.confidence
+                FROM feature_log AS feature
+                LEFT JOIN LATERAL (
+                    SELECT
+                        model_version,
+                        predicted_class,
+                        confidence
+                    FROM inference_log
+                    WHERE image_id = feature.image_id
+                    ORDER BY created_at DESC, inference_id DESC
+                    LIMIT 1
+                ) AS inference
+                    ON TRUE
+                WHERE feature.label IS NULL
+                ORDER BY
+                    CASE
+                        WHEN inference.model_version IS NOT NULL THEN 0
+                        ELSE 1
+                    END,
+                    feature.timestamp ASC
+                LIMIT 1
+                """
+            )
+
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+def fetch_labeling_stats() -> tuple[int, int]:
+    """Return labeled and unlabeled event counts."""
+
+    with create_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE label IS NOT NULL
+                    ) AS labeled_count,
+                    COUNT(*) FILTER (
+                        WHERE label IS NULL
+                    ) AS unlabeled_count
+                FROM feature_log
+                """
+            )
+
+            row = cursor.fetchone()
+
+    if row is None:
+        raise RuntimeError("Failed to fetch labeling statistics.")
+
+    return int(row[0]), int(row[1])
+
+
+def set_event_label(
+    event_id: UUID,
+    label: str,
+) -> bool:
+    """Persist one human label for an unlabeled feature event."""
+
+    with create_postgres_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE feature_log
+                SET label = %s
+                WHERE event_id = %s
+                  AND label IS NULL
+                """,
+                (
+                    label,
+                    str(event_id),
+                ),
+            )
+
+            updated_rows = cursor.rowcount
+
+        connection.commit()
+
+    return updated_rows == 1
+
+
 def fetch_event_image(
     event_id: UUID,
 ) -> bytes | None:
@@ -109,6 +210,7 @@ def fetch_event_image(
         return None
 
     return bytes(row[0])
+
 
 def check_postgres_connection() -> bool:
     """Verify that the offline feature store is reachable."""

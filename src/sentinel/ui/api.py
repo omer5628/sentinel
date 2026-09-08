@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 import psycopg2
@@ -6,19 +7,36 @@ from fastapi import FastAPI, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from sentinel.ui.monitoring import fetch_rabbitmq_status
-from sentinel.ui.repository import (
-    check_postgres_connection,
-    fetch_event_image,
-    fetch_recent_events,
-    has_recent_mnist_event,
-)
-
 from sentinel.ui.producer_controller import (
     get_producer_pid,
     is_producer_running,
     start_producer,
     stop_producer,
 )
+from sentinel.ui.repository import (
+    check_postgres_connection,
+    fetch_event_image as fetch_event_image_bytes,
+    fetch_labeling_stats,
+    fetch_next_unlabeled_event,
+    fetch_recent_events,
+    has_recent_mnist_event,
+    set_event_label,
+)
+
+
+LabelValue = Literal[
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "Discard",
+]
 
 
 class EventResponse(BaseModel):
@@ -46,11 +64,47 @@ class SystemStatusResponse(BaseModel):
     queue_depth: int
     worker_consumers: int
 
+
 class ProducerControlResponse(BaseModel):
     """Represent the managed Producer process state."""
 
     running: bool
     pid: int | None
+
+
+class LabelingEventResponse(BaseModel):
+    """Represent one event waiting for human annotation."""
+
+    event_id: UUID
+    image_id: str
+    timestamp: datetime
+    model_version: str
+    inference_model_version: str | None
+    predicted_class: int | None
+    confidence: float | None
+
+
+class LabelingStatsResponse(BaseModel):
+    """Represent human-labeling progress."""
+
+    labeled: int
+    unlabeled: int
+    total: int
+
+
+class LabelRequest(BaseModel):
+    """Represent a human label submitted for one event."""
+
+    label: LabelValue
+
+
+class LabelResponse(BaseModel):
+    """Represent a successfully stored human label."""
+
+    event_id: UUID
+    label: str
+    status: str = "labeled"
+
 
 app = FastAPI(
     title="Sentinel UI API",
@@ -134,6 +188,7 @@ def get_system_status() -> SystemStatusResponse:
         queue_depth=queue_depth,
         worker_consumers=worker_consumers,
     )
+
 
 @app.get(
     "/producer/status",
@@ -220,6 +275,93 @@ def get_events(
     ]
 
 
+@app.get(
+    "/labeling/next",
+    response_model=LabelingEventResponse,
+)
+def get_next_labeling_event() -> LabelingEventResponse:
+    """Return the oldest event waiting for a human label."""
+
+    try:
+        row = fetch_next_unlabeled_event()
+    except psycopg2.Error as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PostgreSQL is unavailable.",
+        ) from error
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No unlabeled events are available.",
+        )
+
+    return LabelingEventResponse(
+        event_id=row["event_id"],
+        image_id=row["image_id"],
+        timestamp=row["timestamp"],
+        model_version=row["model_version"],
+        inference_model_version=row["inference_model_version"],
+        predicted_class=row["predicted_class"],
+        confidence=row["confidence"],
+    )
+
+
+@app.get(
+    "/labeling/stats",
+    response_model=LabelingStatsResponse,
+)
+def get_labeling_stats() -> LabelingStatsResponse:
+    """Return current human-labeling progress."""
+
+    try:
+        labeled, unlabeled = fetch_labeling_stats()
+    except psycopg2.Error as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PostgreSQL is unavailable.",
+        ) from error
+
+    return LabelingStatsResponse(
+        labeled=labeled,
+        unlabeled=unlabeled,
+        total=labeled + unlabeled,
+    )
+
+
+@app.post(
+    "/events/{event_id}/label",
+    response_model=LabelResponse,
+)
+def label_event(
+    event_id: UUID,
+    request: LabelRequest,
+) -> LabelResponse:
+    """Store a human label for one processed event."""
+
+    try:
+        updated = set_event_label(
+            event_id=event_id,
+            label=request.label,
+        )
+    except psycopg2.Error as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PostgreSQL is unavailable.",
+        ) from error
+
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The event was already labeled or does not exist.",
+        )
+
+    return LabelResponse(
+        event_id=event_id,
+        label=request.label,
+    )
+
+
 @app.get("/events/{event_id}/image")
 def get_event_image(
     event_id: UUID,
@@ -227,7 +369,9 @@ def get_event_image(
     """Return the raw PNG stored for one processed event."""
 
     try:
-        image_bytes = fetch_event_image(event_id=event_id)
+        image_bytes = fetch_event_image_bytes(
+            event_id=event_id,
+        )
     except psycopg2.Error as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
