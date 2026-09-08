@@ -1,6 +1,10 @@
 registry:
   existingPullSecret: ""
 
+worker:
+  autoInference:
+    enabled: true
+
 prometheus:
   service:
     type: ClusterIP
