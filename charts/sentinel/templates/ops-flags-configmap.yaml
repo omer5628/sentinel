@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-ops-flags
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: sentinel-ops-flags
+    app.kubernetes.io/part-of: sentinel
+    app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+data:
+  RETRAINING_ENABLED: {{ .Values.opsFlags.retrainingEnabled | quote }}
+  CANARY_DEPLOY_ALLOWED: {{ .Values.opsFlags.canaryDeployAllowed | quote }}

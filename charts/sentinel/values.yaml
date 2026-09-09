@@ -3,6 +3,10 @@
 config:
   logLevel: "INFO"
 
+opsFlags:
+  retrainingEnabled: false
+  canaryDeployAllowed: false
+
 rabbitmq:
   port: "5672"
   managementPort: "15672"
