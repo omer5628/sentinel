@@ -5,7 +5,8 @@
 	docker-persistence-check minikube-network-check \
 	check lint type-check test sync \
 	compose-up compose-build compose-down compose-restart compose-logs \
-	producer-local worker-local api-local ui-api-local ui-frontend-local \
+	producer-local worker-local api-local \
+	ui-api-local ui-frontend-local ui-up ui-stop \
 	minikube-up minikube-stop minikube-delete \
 	k8s-apply k8s-observability-apply k8s-serving-deploy \
 	k8s-status k8s-worker-logs k8s-api-logs \
@@ -42,6 +43,8 @@ help:
 	@echo "  make api-local               Start the inference API locally"
 	@echo "  make ui-api-local            Start the Sentinel UI API on port 8001"
 	@echo "  make ui-frontend-local       Start the React/Vite UI on port 5173"
+	@echo "  make ui-up                   Start UI API and React/Vite in background"
+	@echo "  make ui-stop                 Stop all Sentinel UI background processes"
 	@echo ""
 	@echo "Minikube:"
 	@echo "  make minikube-up             Create or start Minikube"
@@ -72,7 +75,7 @@ help:
 	@echo "  make backup-runtime          Back up persistent runtime state"
 	@echo ""
 	@echo "System:"
-	@echo "  make system-up               Start Minikube and all port forwards"
+	@echo "  make system-up               Start Minikube, port forwards and Sentinel UI"
 	@echo ""
 
 
@@ -163,7 +166,122 @@ ui-api-local:
 		--port 8001
 
 ui-frontend-local:
-	cd frontend && npm run dev -- --host 0.0.0.0
+	npm --prefix frontend run dev -- \
+		--host 0.0.0.0 \
+		--port 5173 \
+		--strictPort
+
+ui-up:
+	@echo "Starting Sentinel UI..."
+	@$(MAKE) ui-stop >/dev/null 2>&1 || true
+	@command -v setsid >/dev/null 2>&1 || { \
+		echo "ERROR: setsid is required but was not found."; \
+		exit 1; \
+	}
+	@kubectl get secret sentinel-service-secrets \
+		-n sentinel-dev \
+		>/dev/null
+	@RABBITMQ_HOST=127.0.0.1 \
+	RABBITMQ_PORT=5673 \
+	RABBITMQ_USERNAME="$$(kubectl get secret sentinel-service-secrets \
+		-n sentinel-dev \
+		-o jsonpath='{.data.RABBITMQ_USERNAME}' | base64 -d)" \
+	RABBITMQ_PASSWORD="$$(kubectl get secret sentinel-service-secrets \
+		-n sentinel-dev \
+		-o jsonpath='{.data.RABBITMQ_PASSWORD}' | base64 -d)" \
+	POSTGRES_HOST=127.0.0.1 \
+	POSTGRES_PORT=5433 \
+	nohup setsid uv run uvicorn sentinel.ui.api:app \
+		--host 0.0.0.0 \
+		--port 8001 \
+		> /tmp/sentinel-ui-api.log 2>&1 & \
+		echo $$! > /tmp/sentinel-ui-api.pid
+	@nohup setsid npm --prefix frontend run dev -- \
+		--host 0.0.0.0 \
+		--port 5173 \
+		--strictPort \
+		> /tmp/sentinel-ui-frontend.log 2>&1 & \
+		echo $$! > /tmp/sentinel-ui-frontend.pid
+	@echo "Waiting for Sentinel UI services..."
+	@ready=0; \
+	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -fsS \
+			http://127.0.0.1:8001/openapi.json \
+			>/dev/null 2>&1; then \
+			ready=1; \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ "$$ready" -ne 1 ]; then \
+		echo "ERROR: Sentinel UI API failed to become ready."; \
+		echo ""; \
+		tail -50 /tmp/sentinel-ui-api.log 2>/dev/null || true; \
+		$(MAKE) ui-stop >/dev/null 2>&1 || true; \
+		exit 1; \
+	fi
+	@ready=0; \
+	for attempt in 1 2 3 4 5 6 7 8 9 10; do \
+		if curl -fsS \
+			http://127.0.0.1:5173/ \
+			>/dev/null 2>&1; then \
+			ready=1; \
+			break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ "$$ready" -ne 1 ]; then \
+		echo "ERROR: Sentinel UI frontend failed to become ready."; \
+		echo ""; \
+		tail -50 /tmp/sentinel-ui-frontend.log 2>/dev/null || true; \
+		$(MAKE) ui-stop >/dev/null 2>&1 || true; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "Sentinel UI started:"
+	@echo "  Processing Monitor: http://localhost:5173"
+	@echo "  Human Labeling:     http://localhost:5173/labeling"
+	@echo "  UI API:             http://localhost:8001"
+	@echo ""
+	@echo "UI logs:"
+	@echo "  API:                 /tmp/sentinel-ui-api.log"
+	@echo "  Frontend:            /tmp/sentinel-ui-frontend.log"
+
+ui-stop:
+	@echo "Stopping Sentinel UI..."
+	@for file in \
+		/tmp/sentinel-ui-api.pid \
+		/tmp/sentinel-ui-frontend.pid; do \
+		if [ -f "$$file" ]; then \
+			pid="$$(cat "$$file")"; \
+			if kill -0 "$$pid" 2>/dev/null; then \
+				pgid="$$(ps -o pgid= -p "$$pid" 2>/dev/null \
+					| tr -d ' ')"; \
+				if [ -n "$$pgid" ]; then \
+					kill -TERM -- "-$$pgid" \
+						2>/dev/null || true; \
+				else \
+					kill "$$pid" \
+						2>/dev/null || true; \
+				fi; \
+			fi; \
+			rm -f "$$file"; \
+		fi; \
+	done
+	@pkill -TERM -f \
+		'[u]vicorn sentinel\.ui\.api:app.*--port 8001' \
+		2>/dev/null || true
+	@pkill -TERM -f \
+		'[v]ite.*--port 5173' \
+		2>/dev/null || true
+	@pkill -TERM -f \
+		'[n]pm --prefix frontend run dev' \
+		2>/dev/null || true
+	@sleep 1
+	@rm -f \
+		/tmp/sentinel-ui-api.pid \
+		/tmp/sentinel-ui-frontend.pid
+	@echo "Sentinel UI stopped."
 
 
 # --------------------------------------------------------------------
@@ -202,6 +320,10 @@ minikube-up:
 	@echo ""
 	@echo "Current Kubernetes context:"
 	@kubectl config current-context
+
+minikube-stop:
+	@echo "Stopping Minikube cluster..."
+	minikube stop
 
 minikube-delete:
 	@echo "Deleting Minikube cluster..."
@@ -409,5 +531,11 @@ system-up:
 	@echo "Starting Sentinel system..."
 	@$(MAKE) minikube-up
 	@$(MAKE) k8s-ports
+	@$(MAKE) ui-up
 	@echo ""
 	@echo "Sentinel system is up."
+	@echo ""
+	@echo "Sentinel UI:"
+	@echo "  Processing Monitor: http://localhost:5173"
+	@echo "  Human Labeling:     http://localhost:5173/labeling"
+	@echo "  UI API:             http://localhost:8001"
