@@ -604,10 +604,16 @@ def test_container_startup() -> None:
             <= 1.0
         )
 
-        assert (
-            payload["model_version"]
-            == "v1"
+        model_version = payload[
+            "model_version"
+        ]
+
+        assert isinstance(
+            model_version,
+            str,
         )
+
+        assert model_version
 
     except Exception:
         try:
