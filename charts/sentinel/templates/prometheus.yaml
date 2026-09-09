@@ -13,6 +13,15 @@ data:
     global:
       scrape_interval: {{ .Values.prometheus.scrapeInterval }}
 
+    {{- if .Values.alertmanager.enabled }}
+
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets:
+                - "alertmanager:{{ .Values.alertmanager.service.port }}"
+    {{- end }}
+
     {{- if .Values.driftDetection.enabled }}
 
     rule_files:
@@ -50,6 +59,9 @@ spec:
         app.kubernetes.io/name: prometheus
         app.kubernetes.io/component: metrics
         app.kubernetes.io/part-of: sentinel
+
+      annotations:
+        sentinel.io/prometheus-config-checksum: {{ printf "%v|%s|%v|%v|%s|%v|%s|%v|%s" .Values.driftDetection.enabled .Values.driftDetection.window .Values.driftDetection.minimumPredictions .Values.driftDetection.predictionDistribution.maxClassShare .Values.driftDetection.alertFor .Values.alertmanager.enabled .Values.prometheus.target.service .Values.prometheus.target.port .Values.prometheus.target.metricsPath | sha256sum | quote }}
 
     spec:
       containers:

@@ -172,6 +172,24 @@ prometheus:
     port: 8000
     metricsPath: /metrics
 
+alertmanager:
+  enabled: false
+  replicaCount: 1
+
+  image:
+    repository: prom/alertmanager
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 9093
+
+  route:
+    groupWait: "5s"
+    groupInterval: "30s"
+    repeatInterval: "1h"
+
 grafana:
   replicaCount: 1
 

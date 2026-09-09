@@ -1,0 +1,118 @@
+{{- if .Values.alertmanager.enabled }}
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: alertmanager-config
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: alert-routing
+    app.kubernetes.io/part-of: sentinel
+
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+
+    route:
+      receiver: "sentinel-default"
+      group_by:
+        - alertname
+        - class_name
+      group_wait: {{ .Values.alertmanager.route.groupWait }}
+      group_interval: {{ .Values.alertmanager.route.groupInterval }}
+      repeat_interval: {{ .Values.alertmanager.route.repeatInterval }}
+
+    receivers:
+      - name: "sentinel-default"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: alertmanager
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: alert-routing
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  replicas: {{ .Values.alertmanager.replicaCount }}
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/component: alert-routing
+        app.kubernetes.io/part-of: sentinel
+
+      annotations:
+        sentinel.io/alertmanager-config-checksum: {{ printf "%s|%s|%s" .Values.alertmanager.route.groupWait .Values.alertmanager.route.groupInterval .Values.alertmanager.route.repeatInterval | sha256sum | quote }}
+
+    spec:
+      containers:
+        - name: alertmanager
+          image: "{{ .Values.alertmanager.image.repository }}:{{ .Values.alertmanager.image.tag }}"
+          imagePullPolicy: {{ .Values.alertmanager.image.pullPolicy }}
+
+          args:
+            - "--config.file=/etc/alertmanager/alertmanager.yml"
+            - "--storage.path=/alertmanager"
+
+          ports:
+            - name: http
+              containerPort: {{ .Values.alertmanager.service.port }}
+
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+
+          volumeMounts:
+            - name: alertmanager-config
+              mountPath: /etc/alertmanager/alertmanager.yml
+              subPath: alertmanager.yml
+
+            - name: alertmanager-storage
+              mountPath: /alertmanager
+
+      volumes:
+        - name: alertmanager-config
+          configMap:
+            name: alertmanager-config
+
+        - name: alertmanager-storage
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: alertmanager
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: alert-routing
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  type: {{ .Values.alertmanager.service.type }}
+
+  selector:
+    app.kubernetes.io/name: alertmanager
+
+  ports:
+    - name: http
+      port: {{ .Values.alertmanager.service.port }}
+      targetPort: http
+{{- end }}
