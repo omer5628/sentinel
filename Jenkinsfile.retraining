@@ -1,0 +1,76 @@
+pipeline {
+    agent {
+        kubernetes {
+            defaultContainer 'python'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-deployer
+
+  containers:
+    - name: python
+      image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+      command:
+        - cat
+      tty: true
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+'''
+        }
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 15, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Emergency Brake') {
+            steps {
+                script {
+                    def retrainingEnabled = sh(
+                        script: '''
+                            python scripts/read_ops_flag.py \
+                              RETRAINING_ENABLED \
+                              sentinel-dev
+                        ''',
+                        returnStdout: true
+                    ).trim()
+
+                    echo(
+                        "RETRAINING_ENABLED=${retrainingEnabled}"
+                    )
+
+                    if (retrainingEnabled != 'true') {
+                        currentBuild.result = 'ABORTED'
+
+                        error(
+                            'Continuous retraining is disabled ' +
+                            'by sentinel-ops-flags.'
+                        )
+                    }
+
+                    echo(
+                        'Emergency brake passed. ' +
+                        'Continuous retraining is enabled.'
+                    )
+                }
+            }
+        }
+
+        stage('Retraining Placeholder') {
+            steps {
+                echo(
+                    'Retraining gate passed. ' +
+                    'Training stages will be added later in Phase 6.'
+                )
+            }
+        }
+    }
+}
