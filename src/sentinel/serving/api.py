@@ -117,6 +117,14 @@ INFERENCE_EVENT_PUBLISHES = Counter(
     ],
 )
 
+MODEL_PREDICTIONS = Counter(
+    "model_predictions_total",
+    "Total successful model predictions by predicted class.",
+    [
+        "class_name",
+    ],
+)
+
 
 CLASS_NAMES = {
     0: "0",
@@ -815,6 +823,10 @@ def predict(
                     "Inference returned an unknown class."
                 ),
             )
+
+        MODEL_PREDICTIONS.labels(
+            class_name=predicted_label,
+        ).inc()
 
         request_span.set_attribute(
             "ml.model.version",
