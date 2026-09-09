@@ -5,6 +5,17 @@ worker:
   autoInference:
     enabled: true
 
+driftDetection:
+  enabled: true
+
+  window: "5m"
+  minimumPredictions: 20
+
+  predictionDistribution:
+    maxClassShare: 0.80
+
+  alertFor: "1m"
+
 prometheus:
   service:
     type: ClusterIP

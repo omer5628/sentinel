@@ -1,0 +1,54 @@
+{{- if and .Values.driftDetection.enabled (eq .Values.driftDetection.strategy "prediction_distribution") }}
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: prometheus-drift-rules
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: drift-detection
+    app.kubernetes.io/part-of: sentinel
+
+data:
+  drift-rules.yml: |
+    groups:
+      - name: sentinel-drift
+        rules:
+          - alert: SentinelPredictionDistributionDrift
+
+            expr: |
+              (
+                sum by (class_name) (
+                  increase(
+                    model_predictions_total[{{ .Values.driftDetection.window }}]
+                  )
+                )
+                /
+                scalar(
+                  sum(
+                    increase(
+                      model_predictions_total[{{ .Values.driftDetection.window }}]
+                    )
+                  )
+                )
+              ) > {{ .Values.driftDetection.predictionDistribution.maxClassShare }}
+              and on()
+              (
+                sum(
+                  increase(
+                    model_predictions_total[{{ .Values.driftDetection.window }}]
+                  )
+                ) >= {{ .Values.driftDetection.minimumPredictions }}
+              )
+
+            for: {{ .Values.driftDetection.alertFor }}
+
+            labels:
+              severity: warning
+              component: model-drift
+              strategy: {{ .Values.driftDetection.strategy | quote }}
+
+            annotations:
+              summary: "Prediction distribution drift detected."
+              description: "A prediction class exceeded the configured maximum share for the configured duration."
+{{- end }}

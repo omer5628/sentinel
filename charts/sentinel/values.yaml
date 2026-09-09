@@ -7,6 +7,18 @@ opsFlags:
   retrainingEnabled: false
   canaryDeployAllowed: false
 
+driftDetection:
+  enabled: false
+  strategy: "prediction_distribution"
+
+  window: "15m"
+  minimumPredictions: 100
+
+  predictionDistribution:
+    maxClassShare: 0.40
+
+  alertFor: "10m"
+
 rabbitmq:
   port: "5672"
   managementPort: "15672"
