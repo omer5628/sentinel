@@ -91,6 +91,33 @@ spec:
         limits:
           cpu: 500m
           memory: 512Mi
+
+    - name: kubectl
+      image: alpine/k8s:1.35.8
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      volumeMounts:
+        - name: alertmanager-jenkins-credentials
+          mountPath: /run/secrets/sentinel-alertmanager
+          readOnly: true
+
+  volumes:
+    - name: alertmanager-jenkins-credentials
+      secret:
+        secretName: sentinel-alertmanager-credentials
+        items:
+          - key: password
+            path: password
 '''
         }
     }
@@ -222,6 +249,45 @@ spec:
                       tests/integration/test_container_startup.py \
                       -v
                 '''
+            }
+        }
+
+        stage('Sync AlertManager Credentials') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+
+                        SECRET_NAME="sentinel-alertmanager-credentials"
+                        TARGET_NAMESPACE="sentinel-dev"
+                        PASSWORD_FILE="/run/secrets/sentinel-alertmanager/password"
+
+                        test -s "$PASSWORD_FILE"
+
+                        if kubectl get secret \
+                          "$SECRET_NAME" \
+                          --namespace "$TARGET_NAMESPACE" \
+                          > /dev/null 2>&1
+                        then
+                          kubectl create secret generic \
+                            "$SECRET_NAME" \
+                            --namespace "$TARGET_NAMESPACE" \
+                            --from-file=password="$PASSWORD_FILE" \
+                            --dry-run=client \
+                            -o yaml \
+                            | kubectl replace \
+                                --namespace "$TARGET_NAMESPACE" \
+                                -f -
+                        else
+                          kubectl create secret generic \
+                            "$SECRET_NAME" \
+                            --namespace "$TARGET_NAMESPACE" \
+                            --from-file=password="$PASSWORD_FILE"
+                        fi
+
+                        echo "AlertManager Jenkins credentials synchronized."
+                    '''
+                }
             }
         }
 
