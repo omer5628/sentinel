@@ -20,6 +20,52 @@ controller:
   additionalPlugins:
     - role-strategy:898.vc050ed2424ca_
 
+  # Mount the existing AlertManager service-account password
+  # without storing the secret value in Git.
+  additionalExistingSecrets:
+    - name: sentinel-alertmanager-credentials
+      keyName: password
+
+  JCasC:
+    defaultConfig: true
+
+    securityRealm: |-
+      local:
+        allowsSignup: false
+        enableCaptcha: false
+        users:
+          - id: "${chart-admin-username}"
+            name: "Jenkins Admin"
+            password: "${chart-admin-password}"
+          - id: "sentinel-alertmanager"
+            name: "Sentinel AlertManager"
+            password: "${sentinel-alertmanager-credentials-password}"
+
+    authorizationStrategy: |-
+      roleBased:
+        roles:
+          global:
+            - name: "admin"
+              permissions:
+                - "Overall/Administer"
+              entries:
+                - user: "${chart-admin-username}"
+
+            - name: "sentinel-alertmanager-read"
+              permissions:
+                - "Overall/Read"
+              entries:
+                - user: "sentinel-alertmanager"
+
+          items:
+            - name: "sentinel-retraining-build"
+              pattern: "^sentinel-retraining$"
+              permissions:
+                - "Job/Read"
+                - "Job/Build"
+              entries:
+                - user: "sentinel-alertmanager"
+
 persistence:
   enabled: true
   storageClass: "standard"
