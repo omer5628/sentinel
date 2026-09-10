@@ -30,6 +30,8 @@ controller:
     - pipeline-build-step:601.v6d4c6d1a_9dc7
     - pipeline-groovy-lib:805.va_fc79344957d
     - script-security:1415.v9a_f9b_3a_c253d
+    - generic-webhook-trigger:2.4.3
+    - json-path-api:2.9.0-148.v22a_7ffe323ce
 
   # Mount the existing AlertManager service-account password
   # without storing the secret value in Git.
