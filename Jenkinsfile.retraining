@@ -25,6 +25,52 @@ spec:
         }
     }
 
+    triggers {
+        GenericTrigger(
+            genericVariables: [
+                [
+                    key: 'alert_status',
+                    value: '$.status',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ],
+                [
+                    key: 'alert_name',
+                    value: '$.commonLabels.alertname',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ],
+                [
+                    key: 'alert_class',
+                    value: '$.commonLabels.class_name',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ],
+                [
+                    key: 'alert_strategy',
+                    value: '$.commonLabels.strategy',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ]
+            ],
+
+            causeString: 'AlertManager: $alert_name ($alert_status)',
+
+            printContributedVariables: true,
+            printPostContent: false,
+            silentResponse: false,
+            shouldNotFlatten: true,
+
+            regexpFilterText: '$alert_status:$alert_name',
+            regexpFilterExpression:
+                '^firing:SentinelPredictionDistributionDrift$'
+        )
+    }
+
     options {
         disableConcurrentBuilds()
         timeout(time: 15, unit: 'MINUTES')
