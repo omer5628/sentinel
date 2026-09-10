@@ -17,8 +17,19 @@ controller:
   # Keep plugin dependency resolution deterministic.
   installLatestPlugins: false
 
+  # Pin the Jenkins chart base plugins explicitly so a chart upgrade
+  # does not implicitly change plugin versions.
+  installPlugins:
+    - kubernetes:4540.v612369217f87
+    - workflow-aggregator:608.v67378e9d3db_1
+    - git:5.10.1
+    - configuration-as-code:2117.vc05a_0b_e6b_f4e
+
   additionalPlugins:
     - role-strategy:898.vc050ed2424ca_
+    - pipeline-build-step:601.v6d4c6d1a_9dc7
+    - pipeline-groovy-lib:805.va_fc79344957d
+    - script-security:1415.v9a_f9b_3a_c253d
 
   # Mount the existing AlertManager service-account password
   # without storing the secret value in Git.
