@@ -14,24 +14,28 @@ data:
     groups:
       - name: sentinel-drift
         rules:
-          - alert: SentinelPredictionDistributionDrift
+          - record: instance:prediction_rate:ratio
 
             expr: |
-              (
-                sum by (class_name) (
+              sum by (class_name) (
+                increase(
+                  model_predictions_total[{{ .Values.driftDetection.window }}]
+                )
+              )
+              /
+              scalar(
+                sum(
                   increase(
                     model_predictions_total[{{ .Values.driftDetection.window }}]
                   )
                 )
-                /
-                scalar(
-                  sum(
-                    increase(
-                      model_predictions_total[{{ .Values.driftDetection.window }}]
-                    )
-                  )
-                )
-              ) > {{ .Values.driftDetection.predictionDistribution.maxClassShare }}
+              )
+
+          - alert: SentinelPredictionDistributionDrift
+
+            expr: |
+              instance:prediction_rate:ratio
+              > {{ .Values.driftDetection.predictionDistribution.maxClassShare }}
               and on()
               (
                 sum(
