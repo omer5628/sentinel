@@ -190,6 +190,14 @@ alertmanager:
     groupInterval: "30s"
     repeatInterval: "1h"
 
+  jenkinsWebhook:
+    enabled: false
+    alertName: "SentinelPredictionDistributionDrift"
+    url: ""
+    username: "sentinel-alertmanager"
+    existingSecret: ""
+    passwordKey: "password"
+
 grafana:
   replicaCount: 1
 
