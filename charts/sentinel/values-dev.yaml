@@ -23,6 +23,14 @@ prometheus:
 alertmanager:
   enabled: true
 
+  jenkinsWebhook:
+    enabled: true
+    alertName: "SentinelPredictionDistributionDrift"
+    url: "http://jenkins.jenkins.svc.cluster.local:8080/generic-webhook-trigger/invoke"
+    username: "sentinel-alertmanager"
+    existingSecret: "sentinel-alertmanager-credentials"
+    passwordKey: "password"
+
 grafana:
   service:
     type: ClusterIP
