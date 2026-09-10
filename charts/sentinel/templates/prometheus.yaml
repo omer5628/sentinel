@@ -62,6 +62,9 @@ spec:
 
       annotations:
         sentinel.io/prometheus-config-checksum: {{ printf "%v|%s|%v|%v|%s|%v|%s|%v|%s" .Values.driftDetection.enabled .Values.driftDetection.window .Values.driftDetection.minimumPredictions .Values.driftDetection.predictionDistribution.maxClassShare .Values.driftDetection.alertFor .Values.alertmanager.enabled .Values.prometheus.target.service .Values.prometheus.target.port .Values.prometheus.target.metricsPath | sha256sum | quote }}
+        {{- if .Values.driftDetection.enabled }}
+        sentinel.io/prometheus-drift-rules-checksum: {{ include (print $.Template.BasePath "/prometheus-drift-rules.yaml") . | sha256sum | quote }}
+        {{- end }}
 
     spec:
       containers:
