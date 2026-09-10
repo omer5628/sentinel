@@ -14,6 +14,12 @@ controller:
 
   initializeOnce: true
 
+  # Keep plugin dependency resolution deterministic.
+  installLatestPlugins: false
+
+  additionalPlugins:
+    - role-strategy:898.vc050ed2424ca_
+
 persistence:
   enabled: true
   storageClass: "standard"
