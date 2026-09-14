@@ -6,9 +6,10 @@ import numpy as np
 import shap
 
 
-DEFAULT_SHAP_NSAMPLES = 64
+DEFAULT_SHAP_NSAMPLES = 128
 DEFAULT_TOP_FEATURE_COUNT = 3
-DEFAULT_L1_FEATURE_COUNT = 10
+DEFAULT_L1_FEATURE_COUNT = 3
+DEFAULT_RANDOM_SEED = 42
 
 
 class ProbabilityPredictor(Protocol):
@@ -29,6 +30,7 @@ class KernelShapConfig:
     nsamples: int
     top_feature_count: int
     l1_feature_count: int
+    random_seed: int
 
     @classmethod
     def from_environment(
@@ -53,6 +55,12 @@ class KernelShapConfig:
                 os.getenv(
                     "SHAP_L1_FEATURES",
                     str(DEFAULT_L1_FEATURE_COUNT),
+                )
+            ),
+            random_seed=int(
+                os.getenv(
+                    "SHAP_RANDOM_SEED",
+                    str(DEFAULT_RANDOM_SEED),
                 )
             ),
         )
@@ -86,6 +94,11 @@ class KernelShapConfig:
             raise ValueError(
                 "SHAP L1 feature count cannot be smaller "
                 "than the requested top feature count."
+            )
+
+        if self.random_seed < 0:
+            raise ValueError(
+                "SHAP random seed must be non-negative."
             )
 
 
@@ -278,15 +291,27 @@ def run_kernel_shap(
         link="identity",
     )
 
-    shap_values = explainer.shap_values(
-        drift,
-        nsamples=config.nsamples,
-        l1_reg=(
-            "num_features"
-            f"({config.l1_feature_count})"
-        ),
-        silent=True,
-    )
+    random_state = np.random.get_state()
+
+    try:
+        np.random.seed(
+            config.random_seed
+        )
+
+        shap_values = explainer.shap_values(
+            drift,
+            nsamples=config.nsamples,
+            l1_reg=(
+                "num_features"
+                f"({config.l1_feature_count})"
+            ),
+            silent=True,
+        )
+
+    finally:
+        np.random.set_state(
+            random_state
+        )
 
     shap_array = np.asarray(
         shap_values,
