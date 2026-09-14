@@ -1,0 +1,376 @@
+pipeline {
+    agent {
+        kubernetes {
+            defaultContainer 'python'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-deployer
+
+  containers:
+    - name: python
+      image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+      command:
+        - cat
+      tty: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+    - name: helm
+      image: alpine/helm:3.18.6
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+    - name: kubectl
+      image: alpine/k8s:1.35.8
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+'''
+        }
+    }
+
+    parameters {
+        string(
+            name: 'ALERT_CLASS',
+            defaultValue: '',
+            description: 'Alert class for manual diagnostic runs.'
+        )
+    }
+
+    triggers {
+        GenericTrigger(
+            genericVariables: [
+                [
+                    key: 'alert_status',
+                    value: '$.status',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ],
+                [
+                    key: 'alert_name',
+                    value: '$.commonLabels.alertname',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ],
+                [
+                    key: 'alert_class',
+                    value: '$.commonLabels.class_name',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ],
+                [
+                    key: 'alert_strategy',
+                    value: '$.commonLabels.strategy',
+                    expressionType: 'JSONPath',
+                    regexpFilter: '',
+                    defaultValue: ''
+                ]
+            ],
+
+            causeString: 'AlertManager diagnostics: $alert_name ($alert_status)',
+
+            printContributedVariables: true,
+            printPostContent: false,
+            silentResponse: false,
+            shouldNotFlatten: true,
+
+            regexpFilterText: '$alert_status:$alert_name',
+            regexpFilterExpression:
+                '^firing:SentinelPredictionDistributionDrift$'
+        )
+    }
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 15, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Validate Trigger Context') {
+            steps {
+                script {
+                    def effectiveAlertClass = env.alert_class?.trim()
+
+                    if (!effectiveAlertClass) {
+                        effectiveAlertClass = params.ALERT_CLASS?.trim()
+                    }
+
+                    if (!effectiveAlertClass) {
+                        error(
+                            'No alert class was provided by AlertManager ' +
+                            'or the manual ALERT_CLASS parameter.'
+                        )
+                    }
+
+                    env.DRIFT_ALERT_CLASS = effectiveAlertClass
+
+                    echo(
+                        "DRIFT_ALERT_CLASS=${env.DRIFT_ALERT_CLASS}"
+                    )
+                }
+
+                sh '''
+                    set -eu
+
+                    case "$DRIFT_ALERT_CLASS" in
+                        ''|*[!0-9]*)
+                            echo "Alert class must be a non-negative integer."
+                            exit 1
+                            ;;
+                    esac
+                '''
+            }
+        }
+
+        stage('Resolve Worker Artifact') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+
+                        WORKER_IMAGE="$(
+                            kubectl get deployment \
+                              sentinel-worker \
+                              --namespace sentinel-dev \
+                              -o jsonpath='{.spec.template.spec.containers[0].image}'
+                        )"
+
+                        if [ -z "$WORKER_IMAGE" ]; then
+                            echo "Unable to resolve the deployed worker image."
+                            exit 1
+                        fi
+
+                        case "$WORKER_IMAGE" in
+                            *@*)
+                                echo "Digest-based worker images are not supported by this workflow yet."
+                                exit 1
+                                ;;
+                            *:*)
+                                ;;
+                            *)
+                                echo "Worker image does not contain an immutable tag."
+                                exit 1
+                                ;;
+                        esac
+
+                        WORKER_REPOSITORY="${WORKER_IMAGE%:*}"
+                        WORKER_TAG="${WORKER_IMAGE##*:}"
+
+                        case "$WORKER_TAG" in
+                            ''|*[!0-9]*)
+                                echo "Expected a Jenkins BUILD_NUMBER worker tag."
+                                echo "Resolved image: $WORKER_IMAGE"
+                                exit 1
+                                ;;
+                        esac
+
+                        printf '%s\\n' \
+                          "$WORKER_REPOSITORY" \
+                          > .drift-worker-repository
+
+                        printf '%s\\n' \
+                          "$WORKER_TAG" \
+                          > .drift-worker-tag
+
+                        echo "Using deployed worker image: $WORKER_IMAGE"
+                    '''
+                }
+            }
+        }
+
+        stage('Render Diagnostics Job') {
+            steps {
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        WORKER_REPOSITORY="$(
+                            cat .drift-worker-repository
+                        )"
+
+                        WORKER_TAG="$(
+                            cat .drift-worker-tag
+                        )"
+
+                        helm template sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set driftDiagnostics.enabled=true \
+                          --set-string driftDiagnostics.runId="${BUILD_NUMBER}" \
+                          --set-string driftDiagnostics.alertClass="${DRIFT_ALERT_CLASS}" \
+                          --set-string worker.image.repository="${WORKER_REPOSITORY}" \
+                          --set-string worker.image.tag="${WORKER_TAG}" \
+                          --show-only templates/drift-diagnostics-job.yaml \
+                          > drift-diagnostics-job.yaml
+
+                        test -s drift-diagnostics-job.yaml
+
+                        grep -F \
+                          "sentinel-drift-diagnostics-${BUILD_NUMBER}" \
+                          drift-diagnostics-job.yaml \
+                          > /dev/null
+
+                        grep -F \
+                          "${WORKER_REPOSITORY}:${WORKER_TAG}" \
+                          drift-diagnostics-job.yaml \
+                          > /dev/null
+
+                        echo "Diagnostics Job manifest rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Run Drift Diagnostics') {
+            steps {
+                script {
+                    def diagnosticsStatus
+
+                    container('kubectl') {
+                        diagnosticsStatus = sh(
+                            script: '''
+                                set -u
+
+                                JOB_NAME="sentinel-drift-diagnostics-${BUILD_NUMBER}"
+
+                                if ! kubectl create \
+                                  --namespace sentinel-dev \
+                                  -f drift-diagnostics-job.yaml
+                                then
+                                    echo "Failed to create diagnostics Job."
+                                    exit 1
+                                fi
+
+                                if ! kubectl wait \
+                                  --namespace sentinel-dev \
+                                  --for=condition=complete \
+                                  "job/${JOB_NAME}" \
+                                  --timeout=8m
+                                then
+                                    echo "Diagnostics Job did not complete successfully."
+
+                                    kubectl describe \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      || true
+
+                                    kubectl logs \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      --all-containers=true \
+                                      > drift-diagnostics.log \
+                                      2>&1 \
+                                      || true
+
+                                    cat drift-diagnostics.log || true
+
+                                    exit 1
+                                fi
+
+                                kubectl logs \
+                                  --namespace sentinel-dev \
+                                  "job/${JOB_NAME}" \
+                                  --all-containers=true \
+                                  > drift-diagnostics.log \
+                                  2>&1
+
+                                cat drift-diagnostics.log
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+
+                    archiveArtifacts(
+                        artifacts: 'drift-diagnostics.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+
+                    if (diagnosticsStatus != 0) {
+                        error(
+                            'SHAP drift diagnostics Job failed.'
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Diagnostics Summary') {
+            steps {
+                sh '''
+                    set -eu
+
+                    TOP_FEATURE_COUNT="$(
+                        grep -Ec \
+                          '^shap_top_feature_[1-3]=' \
+                          drift-diagnostics.log
+                    )"
+
+                    if [ "$TOP_FEATURE_COUNT" -ne 3 ]; then
+                        echo "Expected exactly three SHAP contributors."
+                        exit 1
+                    fi
+
+                    echo "=== Top 3 SHAP Contributors ==="
+
+                    grep -E \
+                      '^shap_top_feature_[1-3](=|_mean_abs=)' \
+                      drift-diagnostics.log
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            container('kubectl') {
+                sh '''
+                    JOB_NAME="sentinel-drift-diagnostics-${BUILD_NUMBER}"
+
+                    kubectl delete job \
+                      "$JOB_NAME" \
+                      --namespace sentinel-dev \
+                      --ignore-not-found=true \
+                      --wait=false \
+                      || true
+                '''
+            }
+
+            sh '''
+                rm -f drift-diagnostics-job.yaml
+                rm -f .drift-worker-repository
+                rm -f .drift-worker-tag
+            '''
+        }
+    }
+}
