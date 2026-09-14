@@ -15,6 +15,8 @@ DEFAULT_RABBITMQ_PORT = 5672
 DEFAULT_RABBITMQ_USERNAME = "sentinel"
 DEFAULT_RABBITMQ_PASSWORD = "sentinel"
 
+MAX_PUBLISH_ATTEMPTS = 2
+
 
 def create_rabbitmq_connection() -> pika.BlockingConnection:
     """Create a RabbitMQ connection for inference events."""
@@ -97,41 +99,49 @@ class InferenceEventPublisher:
         self,
         event: InferenceEventV1,
     ) -> None:
-        """Publish one inference event."""
+        """Publish one inference event with one reconnect retry."""
 
         body = (
             event.model_dump_json()
             .encode("utf-8")
         )
 
+        properties = pika.BasicProperties(
+            content_type="application/json",
+            delivery_mode=2,
+        )
+
         with self.lock:
-            try:
-                channel = (
-                    self._ensure_channel()
-                )
-
-                channel.basic_publish(
-                    exchange="",
-                    routing_key=(
-                        INFERENCE_QUEUE_NAME
-                    ),
-                    body=body,
-                    properties=(
-                        pika.BasicProperties(
-                            content_type=(
-                                "application/json"
-                            ),
-                            delivery_mode=2,
-                        )
-                    ),
-                )
-
-            except (
-                AMQPError,
-                OSError,
+            for attempt in range(
+                MAX_PUBLISH_ATTEMPTS
             ):
-                self._discard_connection()
-                raise
+                try:
+                    channel = (
+                        self._ensure_channel()
+                    )
+
+                    channel.basic_publish(
+                        exchange="",
+                        routing_key=(
+                            INFERENCE_QUEUE_NAME
+                        ),
+                        body=body,
+                        properties=properties,
+                    )
+
+                    return
+
+                except (
+                    AMQPError,
+                    OSError,
+                ):
+                    self._discard_connection()
+
+                    if (
+                        attempt
+                        == MAX_PUBLISH_ATTEMPTS - 1
+                    ):
+                        raise
 
     def _discard_connection(
         self,
@@ -144,7 +154,10 @@ class InferenceEventPublisher:
         ):
             try:
                 self.channel.close()
-            except AMQPError:
+            except (
+                AMQPError,
+                OSError,
+            ):
                 pass
 
         if (
@@ -153,7 +166,10 @@ class InferenceEventPublisher:
         ):
             try:
                 self.connection.close()
-            except AMQPError:
+            except (
+                AMQPError,
+                OSError,
+            ):
                 pass
 
         self.channel = None
