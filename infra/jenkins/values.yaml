@@ -79,6 +79,14 @@ controller:
               entries:
                 - user: "sentinel-alertmanager"
 
+            - name: "sentinel-drift-diagnostics-build"
+              pattern: "^sentinel-drift-diagnostics$"
+              permissions:
+                - "Job/Read"
+                - "Job/Build"
+              entries:
+                - user: "sentinel-alertmanager"
+
 persistence:
   enabled: true
   storageClass: "standard"
