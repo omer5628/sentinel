@@ -278,3 +278,34 @@ inferenceLogger:
     limits:
       cpu: "500m"
       memory: "512Mi"
+
+driftDiagnostics:
+  enabled: false
+
+  runId: ""
+  alertClass: ""
+
+  driftSampleSize: 5
+  backgroundSampleSize: 20
+  lookbackMinutes: 5
+
+  shap:
+    nsamples: 128
+    topFeatures: 3
+    l1Features: 3
+    randomSeed: 42
+
+  triton:
+    url: "clearml-serving-triton.default.svc.cluster.local:8001"
+    modelName: "sentinel-mnist_1"
+    modelVersion: "1"
+    batchSize: 8
+    sampleShape: "1,28,28"
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"

@@ -1,0 +1,131 @@
+{{- if .Values.driftDiagnostics.enabled }}
+
+{{- $runId := required
+    "driftDiagnostics.runId is required when drift diagnostics are enabled"
+    .Values.driftDiagnostics.runId
+-}}
+
+{{- $alertClass := required
+    "driftDiagnostics.alertClass is required when drift diagnostics are enabled"
+    .Values.driftDiagnostics.alertClass
+-}}
+
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: "sentinel-drift-diagnostics-{{ $runId }}"
+  labels:
+    app.kubernetes.io/name: sentinel-drift-diagnostics
+    app.kubernetes.io/component: drift-diagnostics
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  backoffLimit: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel-drift-diagnostics
+        app.kubernetes.io/component: drift-diagnostics
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      {{- if .Values.registry.existingPullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.registry.existingPullSecret | quote }}
+      {{- end }}
+
+      containers:
+        - name: drift-diagnostics
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+
+          command:
+            - python
+            - -m
+            - sentinel.diagnostics.run_drift_diagnostics
+
+          args:
+            - --alert-class
+            - {{ $alertClass | quote }}
+
+            - --drift-sample-size
+            - {{ .Values.driftDiagnostics.driftSampleSize | quote }}
+
+            - --background-sample-size
+            - {{ .Values.driftDiagnostics.backgroundSampleSize | quote }}
+
+            - --lookback-minutes
+            - {{ .Values.driftDiagnostics.lookbackMinutes | quote }}
+
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_HOST
+
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_PORT
+
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_DB
+
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_USER
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_PASSWORD
+
+            - name: TRITON_GRPC_URL
+              value: {{ .Values.driftDiagnostics.triton.url | quote }}
+
+            - name: TRITON_MODEL_NAME
+              value: {{ .Values.driftDiagnostics.triton.modelName | quote }}
+
+            - name: TRITON_MODEL_VERSION
+              value: {{ .Values.driftDiagnostics.triton.modelVersion | quote }}
+
+            - name: SHAP_TRITON_BATCH_SIZE
+              value: {{ .Values.driftDiagnostics.triton.batchSize | quote }}
+
+            - name: SHAP_SAMPLE_SHAPE
+              value: {{ .Values.driftDiagnostics.triton.sampleShape | quote }}
+
+            - name: SHAP_NSAMPLES
+              value: {{ .Values.driftDiagnostics.shap.nsamples | quote }}
+
+            - name: SHAP_TOP_FEATURES
+              value: {{ .Values.driftDiagnostics.shap.topFeatures | quote }}
+
+            - name: SHAP_L1_FEATURES
+              value: {{ .Values.driftDiagnostics.shap.l1Features | quote }}
+
+            - name: SHAP_RANDOM_SEED
+              value: {{ .Values.driftDiagnostics.shap.randomSeed | quote }}
+
+          resources:
+            requests:
+              cpu: {{ .Values.driftDiagnostics.resources.requests.cpu | quote }}
+              memory: {{ .Values.driftDiagnostics.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.driftDiagnostics.resources.limits.cpu | quote }}
+              memory: {{ .Values.driftDiagnostics.resources.limits.memory | quote }}
+
+{{- end }}
