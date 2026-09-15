@@ -81,7 +81,7 @@ spec:
                     defaultValue: ''
                 ],
                 [
-                    key: 'alert_class',
+                    key: 'ALERT_CLASS',
                     value: '$.commonLabels.class_name',
                     expressionType: 'JSONPath',
                     regexpFilter: '',
@@ -118,20 +118,8 @@ spec:
         stage('Validate Trigger Context') {
             steps {
                 script {
-                    def webhookAlertClass = ''
-
-                    if (binding.hasVariable('alert_class')) {
-                        webhookAlertClass = binding
-                            .getVariable('alert_class')
-                            ?.toString()
-                            ?.trim()
-                    }
-
-                    def effectiveAlertClass = webhookAlertClass
-
-                    if (!effectiveAlertClass) {
-                        effectiveAlertClass = params.ALERT_CLASS?.trim()
-                    }
+                    def effectiveAlertClass =
+                        params.ALERT_CLASS?.trim()
 
                     if (!effectiveAlertClass) {
                         error(
