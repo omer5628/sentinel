@@ -309,3 +309,20 @@ driftDiagnostics:
     limits:
       cpu: "2"
       memory: "2Gi"
+
+retraining:
+  enabled: false
+
+  runId: ""
+  pipelineName: "sentinel-retraining"
+
+  minimumNewRows: 1000
+  discardLabel: "Discard"
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

@@ -21,6 +21,36 @@ spec:
         limits:
           cpu: "1"
           memory: 1Gi
+
+    - name: helm
+      image: alpine/helm:3.18.6
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+    - name: kubectl
+      image: alpine/k8s:1.35.8
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
 '''
         }
     }
@@ -110,13 +140,320 @@ spec:
             }
         }
 
+        stage('Resolve Worker Artifact') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+
+                        WORKER_IMAGE="$(
+                            kubectl get deployment \
+                              sentinel-worker \
+                              --namespace sentinel-dev \
+                              -o jsonpath='{.spec.template.spec.containers[0].image}'
+                        )"
+
+                        if [ -z "$WORKER_IMAGE" ]; then
+                            echo "Unable to resolve the deployed worker image."
+                            exit 1
+                        fi
+
+                        case "$WORKER_IMAGE" in
+                            *@*)
+                                echo "Digest-based worker images are not supported by this workflow yet."
+                                exit 1
+                                ;;
+                            *:*)
+                                ;;
+                            *)
+                                echo "Worker image does not contain an immutable tag."
+                                exit 1
+                                ;;
+                        esac
+
+                        WORKER_REPOSITORY="${WORKER_IMAGE%:*}"
+                        WORKER_TAG="${WORKER_IMAGE##*:}"
+
+                        case "$WORKER_TAG" in
+                            ''|*[!0-9]*)
+                                echo "Expected a Jenkins BUILD_NUMBER worker tag."
+                                echo "Resolved image: $WORKER_IMAGE"
+                                exit 1
+                                ;;
+                        esac
+
+                        printf '%s\\n' \
+                          "$WORKER_REPOSITORY" \
+                          > .retraining-worker-repository
+
+                        printf '%s\\n' \
+                          "$WORKER_TAG" \
+                          > .retraining-worker-tag
+
+                        echo "Using deployed worker image: $WORKER_IMAGE"
+                    '''
+                }
+            }
+        }
+
+        stage('Render Fetch Data Job') {
+            steps {
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        WORKER_REPOSITORY="$(
+                            cat .retraining-worker-repository
+                        )"
+
+                        WORKER_TAG="$(
+                            cat .retraining-worker-tag
+                        )"
+
+                        helm template sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set retraining.enabled=true \
+                          --set-string retraining.runId="${BUILD_NUMBER}" \
+                          --set-string worker.image.repository="${WORKER_REPOSITORY}" \
+                          --set-string worker.image.tag="${WORKER_TAG}" \
+                          --show-only templates/retraining-fetch-job.yaml \
+                          > retraining-fetch-job.yaml
+
+                        test -s retraining-fetch-job.yaml
+
+                        grep -F \
+                          "sentinel-retraining-fetch-${BUILD_NUMBER}" \
+                          retraining-fetch-job.yaml \
+                          > /dev/null
+
+                        grep -F \
+                          "${WORKER_REPOSITORY}:${WORKER_TAG}" \
+                          retraining-fetch-job.yaml \
+                          > /dev/null
+
+                        echo "Retraining Fetch Data Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Fetch Data') {
+            steps {
+                script {
+                    def fetchStatus
+
+                    container('kubectl') {
+                        fetchStatus = sh(
+                            script: '''
+                                set -u
+
+                                JOB_NAME="sentinel-retraining-fetch-${BUILD_NUMBER}"
+
+                                if ! kubectl create \
+                                  --namespace sentinel-dev \
+                                  -f retraining-fetch-job.yaml
+                                then
+                                    echo "Failed to create retraining Fetch Data Job."
+                                    exit 1
+                                fi
+
+                                if ! kubectl wait \
+                                  --namespace sentinel-dev \
+                                  --for=condition=complete \
+                                  "job/${JOB_NAME}" \
+                                  --timeout=5m
+                                then
+                                    echo "Retraining Fetch Data Job did not complete successfully."
+
+                                    kubectl describe \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      || true
+
+                                    kubectl logs \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      --all-containers=true \
+                                      > retraining-fetch.log \
+                                      2>&1 \
+                                      || true
+
+                                    cat retraining-fetch.log || true
+
+                                    exit 1
+                                fi
+
+                                kubectl logs \
+                                  --namespace sentinel-dev \
+                                  "job/${JOB_NAME}" \
+                                  --all-containers=true \
+                                  > retraining-fetch.log \
+                                  2>&1
+
+                                cat retraining-fetch.log
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+
+                    archiveArtifacts(
+                        artifacts: 'retraining-fetch.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+
+                    if (fetchStatus != 0) {
+                        error(
+                            'Retraining Fetch Data Job failed.'
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Evaluate Data Gate') {
+            steps {
+                sh '''
+                    set -eu
+
+                    GATE_STATUS="$(
+                        sed -n \
+                          's/^retraining_gate=//p' \
+                          retraining-fetch.log \
+                        | tail -n 1
+                    )"
+
+                    NEW_ROWS="$(
+                        sed -n \
+                          's/^new_rows=//p' \
+                          retraining-fetch.log \
+                        | tail -n 1
+                    )"
+
+                    MINIMUM_NEW_ROWS="$(
+                        sed -n \
+                          's/^minimum_new_rows=//p' \
+                          retraining-fetch.log \
+                        | tail -n 1
+                    )"
+
+                    case "$GATE_STATUS" in
+                        passed|blocked)
+                            ;;
+                        *)
+                            echo "Invalid or missing retraining gate status."
+                            exit 1
+                            ;;
+                    esac
+
+                    case "$NEW_ROWS" in
+                        ''|*[!0-9]*)
+                            echo "Invalid or missing new_rows value."
+                            exit 1
+                            ;;
+                    esac
+
+                    case "$MINIMUM_NEW_ROWS" in
+                        ''|*[!0-9]*)
+                            echo "Invalid or missing minimum_new_rows value."
+                            exit 1
+                            ;;
+                    esac
+
+                    printf '%s\\n' \
+                      "$GATE_STATUS" \
+                      > .retraining-gate-status
+
+                    printf '%s\\n' \
+                      "$NEW_ROWS" \
+                      > .retraining-new-rows
+
+                    printf '%s\\n' \
+                      "$MINIMUM_NEW_ROWS" \
+                      > .retraining-minimum-new-rows
+                '''
+
+                script {
+                    def gateStatus = sh(
+                        script: 'cat .retraining-gate-status',
+                        returnStdout: true
+                    ).trim()
+
+                    def newRows = sh(
+                        script: 'cat .retraining-new-rows',
+                        returnStdout: true
+                    ).trim()
+
+                    def minimumNewRows = sh(
+                        script: 'cat .retraining-minimum-new-rows',
+                        returnStdout: true
+                    ).trim()
+
+                    echo(
+                        "Retraining data gate: " +
+                        "${newRows}/${minimumNewRows} new rows."
+                    )
+
+                    if (gateStatus == 'blocked') {
+                        currentBuild.result = 'ABORTED'
+
+                        error(
+                            'Retraining data gate blocked: ' +
+                            "${newRows} new labeled rows are available, " +
+                            "but ${minimumNewRows} are required."
+                        )
+                    }
+
+                    if (gateStatus != 'passed') {
+                        error(
+                            "Unexpected retraining gate status: " +
+                            gateStatus
+                        )
+                    }
+
+                    echo(
+                        'Retraining data gate passed.'
+                    )
+                }
+            }
+        }
+
         stage('Retraining Placeholder') {
             steps {
                 echo(
-                    'Retraining gate passed. ' +
-                    'Training stages will be added later in Phase 6.'
+                    'Retraining data gate passed. ' +
+                    'Training stage will be added next.'
                 )
             }
+        }
+    }
+
+    post {
+        always {
+            container('kubectl') {
+                sh '''
+                    JOB_NAME="sentinel-retraining-fetch-${BUILD_NUMBER}"
+
+                    kubectl delete job \
+                      "$JOB_NAME" \
+                      --namespace sentinel-dev \
+                      --ignore-not-found=true \
+                      --wait=false \
+                      || true
+                '''
+            }
+
+            sh '''
+                rm -f retraining-fetch-job.yaml
+                rm -f retraining-fetch.log
+                rm -f .retraining-worker-repository
+                rm -f .retraining-worker-tag
+                rm -f .retraining-gate-status
+                rm -f .retraining-new-rows
+                rm -f .retraining-minimum-new-rows
+            '''
         }
     }
 }
