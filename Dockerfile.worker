@@ -33,7 +33,10 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 WORKDIR /app
 
-RUN groupadd --system sentinel \
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system sentinel \
     && useradd \
         --system \
         --gid sentinel \
