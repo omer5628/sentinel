@@ -118,7 +118,16 @@ spec:
         stage('Validate Trigger Context') {
             steps {
                 script {
-                    def effectiveAlertClass = env.alert_class?.trim()
+                    def webhookAlertClass = ''
+
+                    if (binding.hasVariable('alert_class')) {
+                        webhookAlertClass = binding
+                            .getVariable('alert_class')
+                            ?.toString()
+                            ?.trim()
+                    }
+
+                    def effectiveAlertClass = webhookAlertClass
 
                     if (!effectiveAlertClass) {
                         effectiveAlertClass = params.ALERT_CLASS?.trim()
