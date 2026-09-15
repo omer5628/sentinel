@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 
 metadata:
-  name: {{ .Release.Name }}-db-migrate-inference-log
+  name: {{ .Release.Name }}-db-migrate
   labels:
     app.kubernetes.io/name: postgres-migration
     app.kubernetes.io/component: database-migration
@@ -68,7 +68,7 @@ spec:
                 sleep 2
               done
 
-              echo "Running inference_log migration..."
+              echo "Running database migrations..."
 
               psql \
                 -v ON_ERROR_STOP=1 \
@@ -76,6 +76,26 @@ spec:
                 -p {{ .Values.postgres.port }} \
                 -U "$POSTGRES_USER" \
                 -d "$POSTGRES_DB" <<'SQL'
+              ALTER TABLE feature_log
+                  ADD COLUMN IF NOT EXISTS labeled_at
+                      TIMESTAMP WITH TIME ZONE;
+
+              UPDATE feature_log
+              SET labeled_at = timestamp
+              WHERE label IS NOT NULL
+                AND labeled_at IS NULL;
+
+              CREATE INDEX IF NOT EXISTS idx_feature_log_labeled_at
+                  ON feature_log (labeled_at)
+                  WHERE label IS NOT NULL;
+
+              CREATE TABLE IF NOT EXISTS retraining_state (
+                  pipeline_name VARCHAR(100) PRIMARY KEY,
+                  last_successful_cutoff TIMESTAMP WITH TIME ZONE NOT NULL,
+                  updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+                      DEFAULT CURRENT_TIMESTAMP
+              );
+
               CREATE TABLE IF NOT EXISTS inference_log (
                   inference_id UUID PRIMARY KEY,
                   image_id VARCHAR(200) NOT NULL,

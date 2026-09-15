@@ -171,7 +171,9 @@ def set_event_label(
             cursor.execute(
                 """
                 UPDATE feature_log
-                SET label = %s
+                SET
+                    label = %s,
+                    labeled_at = CURRENT_TIMESTAMP
                 WHERE event_id = %s
                   AND label IS NULL
                 """,

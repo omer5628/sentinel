@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS feature_log (
     raw_image BYTEA,
     vector JSONB NOT NULL,
     label VARCHAR(50),
+    labeled_at TIMESTAMP WITH TIME ZONE,
     model_version VARCHAR(20) NOT NULL
 );
 
@@ -17,6 +18,17 @@ CREATE INDEX IF NOT EXISTS idx_feature_log_timestamp
 CREATE INDEX IF NOT EXISTS idx_feature_log_unlabeled
     ON feature_log (timestamp)
     WHERE label IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_feature_log_labeled_at
+    ON feature_log (labeled_at)
+    WHERE label IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS retraining_state (
+    pipeline_name VARCHAR(100) PRIMARY KEY,
+    last_successful_cutoff TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+        DEFAULT CURRENT_TIMESTAMP
+);
 
 
 CREATE TABLE IF NOT EXISTS batch_predictions (
