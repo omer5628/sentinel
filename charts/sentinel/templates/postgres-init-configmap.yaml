@@ -35,6 +35,39 @@ data:
         ON feature_log (labeled_at)
         WHERE label IS NOT NULL;
 
+    CREATE OR REPLACE FUNCTION prevent_feature_log_history_mutation()
+    RETURNS TRIGGER AS $$
+    BEGIN
+        IF NEW.event_id IS DISTINCT FROM OLD.event_id
+           OR NEW.image_id IS DISTINCT FROM OLD.image_id
+           OR NEW.timestamp IS DISTINCT FROM OLD.timestamp
+           OR NEW.raw_image IS DISTINCT FROM OLD.raw_image
+           OR NEW.vector IS DISTINCT FROM OLD.vector
+           OR NEW.model_version IS DISTINCT FROM OLD.model_version
+        THEN
+            RAISE EXCEPTION
+                'Historical feature fields in feature_log are immutable';
+        END IF;
+
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS feature_log_history_immutable
+        ON feature_log;
+
+    CREATE TRIGGER feature_log_history_immutable
+    BEFORE UPDATE OF
+        event_id,
+        image_id,
+        timestamp,
+        raw_image,
+        vector,
+        model_version
+    ON feature_log
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_feature_log_history_mutation();
+
     CREATE TABLE IF NOT EXISTS retraining_state (
         pipeline_name VARCHAR(100) PRIMARY KEY,
         last_successful_cutoff TIMESTAMP WITH TIME ZONE NOT NULL,
