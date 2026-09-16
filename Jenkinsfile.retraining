@@ -103,7 +103,7 @@ spec:
 
     options {
         disableConcurrentBuilds()
-        timeout(time: 15, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     stages {
@@ -325,6 +325,13 @@ spec:
                         | tail -n 1
                     )"
 
+                    RETRAINING_CUTOFF="$(
+                        sed -n \
+                          's/^retraining_cutoff=//p' \
+                          retraining-fetch.log \
+                        | tail -n 1
+                    )"
+
                     NEW_ROWS="$(
                         sed -n \
                           's/^new_rows=//p' \
@@ -348,6 +355,11 @@ spec:
                             ;;
                     esac
 
+                    if [ -z "$RETRAINING_CUTOFF" ]; then
+                        echo "Invalid or missing retraining cutoff."
+                        exit 1
+                    fi
+
                     case "$NEW_ROWS" in
                         ''|*[!0-9]*)
                             echo "Invalid or missing new_rows value."
@@ -365,6 +377,10 @@ spec:
                     printf '%s\\n' \
                       "$GATE_STATUS" \
                       > .retraining-gate-status
+
+                    printf '%s\\n' \
+                      "$RETRAINING_CUTOFF" \
+                      > .retraining-cutoff
 
                     printf '%s\\n' \
                       "$NEW_ROWS" \
@@ -420,12 +436,145 @@ spec:
             }
         }
 
-        stage('Retraining Placeholder') {
+        stage('Render Train Job') {
             steps {
-                echo(
-                    'Retraining data gate passed. ' +
-                    'Training stage will be added next.'
-                )
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        WORKER_TAG="$(
+                            cat .retraining-worker-tag
+                        )"
+
+                        RETRAINING_CUTOFF="$(
+                            cat .retraining-cutoff
+                        )"
+
+                        helm template sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.train.enabled=true \
+                          --set-string retraining.runId="${BUILD_NUMBER}" \
+                          --set-string retraining.cutoff="${RETRAINING_CUTOFF}" \
+                          --set-string retraining.train.image.tag="${WORKER_TAG}" \
+                          --show-only templates/retraining-train-job.yaml \
+                          > retraining-train-job.yaml
+
+                        test -s retraining-train-job.yaml
+
+                        grep -F \
+                          "sentinel-retraining-train-${BUILD_NUMBER}" \
+                          retraining-train-job.yaml \
+                          > /dev/null
+
+                        TRAIN_IMAGE="$(
+                            sed -n \
+                              's/^[[:space:]]*image: "\\(.*\\)"$/\\1/p' \
+                              retraining-train-job.yaml \
+                            | head -n 1
+                        )"
+
+                        if [ -z "$TRAIN_IMAGE" ]; then
+                            echo "Unable to resolve rendered training image."
+                            exit 1
+                        fi
+
+                        case "$TRAIN_IMAGE" in
+                            *:"${WORKER_TAG}")
+                                ;;
+                            *)
+                                echo "Training image tag does not match deployed worker tag."
+                                echo "Rendered training image: $TRAIN_IMAGE"
+                                echo "Expected immutable tag: $WORKER_TAG"
+                                exit 1
+                                ;;
+                        esac
+
+                        echo "Using retraining image: $TRAIN_IMAGE"
+                        echo "Retraining Train Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Train') {
+            steps {
+                script {
+                    def trainStatus
+
+                    container('kubectl') {
+                        trainStatus = sh(
+                            script: '''
+                                set -u
+
+                                JOB_NAME="sentinel-retraining-train-${BUILD_NUMBER}"
+
+                                if ! kubectl create \
+                                  --namespace sentinel-dev \
+                                  -f retraining-train-job.yaml
+                                then
+                                    echo "Failed to create retraining Train Job."
+                                    exit 1
+                                fi
+
+                                if ! kubectl wait \
+                                  --namespace sentinel-dev \
+                                  --for=condition=complete \
+                                  "job/${JOB_NAME}" \
+                                  --timeout=15m
+                                then
+                                    echo "Retraining Train Job did not complete successfully."
+
+                                    kubectl describe \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      || true
+
+                                    kubectl logs \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      --all-containers=true \
+                                      > retraining-train.log \
+                                      2>&1 \
+                                      || true
+
+                                    cat retraining-train.log || true
+
+                                    exit 1
+                                fi
+
+                                kubectl logs \
+                                  --namespace sentinel-dev \
+                                  "job/${JOB_NAME}" \
+                                  --all-containers=true \
+                                  > retraining-train.log \
+                                  2>&1
+
+                                cat retraining-train.log
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+
+                    archiveArtifacts(
+                        artifacts: 'retraining-train.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+
+                    if (trainStatus != 0) {
+                        error(
+                            'Retraining Train Job failed.'
+                        )
+                    }
+
+                    echo(
+                        'Retraining completed successfully. ' +
+                        'Checkpoint has not been updated yet.'
+                    )
+                }
             }
         }
     }
@@ -434,10 +583,15 @@ spec:
         always {
             container('kubectl') {
                 sh '''
-                    JOB_NAME="sentinel-retraining-fetch-${BUILD_NUMBER}"
+                    kubectl delete job \
+                      "sentinel-retraining-fetch-${BUILD_NUMBER}" \
+                      --namespace sentinel-dev \
+                      --ignore-not-found=true \
+                      --wait=false \
+                      || true
 
                     kubectl delete job \
-                      "$JOB_NAME" \
+                      "sentinel-retraining-train-${BUILD_NUMBER}" \
                       --namespace sentinel-dev \
                       --ignore-not-found=true \
                       --wait=false \
@@ -448,9 +602,12 @@ spec:
             sh '''
                 rm -f retraining-fetch-job.yaml
                 rm -f retraining-fetch.log
+                rm -f retraining-train-job.yaml
+                rm -f retraining-train.log
                 rm -f .retraining-worker-repository
                 rm -f .retraining-worker-tag
                 rm -f .retraining-gate-status
+                rm -f .retraining-cutoff
                 rm -f .retraining-new-rows
                 rm -f .retraining-minimum-new-rows
             '''
