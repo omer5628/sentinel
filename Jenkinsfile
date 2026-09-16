@@ -168,7 +168,10 @@ spec:
             steps {
                 container('buildkit') {
                     sh '''
-                        rm -f sentinel-api.tar sentinel-worker.tar
+                        rm -f \
+                          sentinel-api.tar \
+                          sentinel-worker.tar \
+                          sentinel-train.tar
 
                         buildctl-daemonless.sh build \
                         --frontend dockerfile.v0 \
@@ -183,6 +186,13 @@ spec:
                         --local dockerfile=. \
                         --opt filename=Dockerfile.worker \
                         --output type=docker,name=omer5628/sentinel-worker:${BUILD_NUMBER},dest=sentinel-worker.tar
+
+                        buildctl-daemonless.sh build \
+                        --frontend dockerfile.v0 \
+                        --local context=. \
+                        --local dockerfile=. \
+                        --opt filename=Dockerfile.train \
+                        --output type=docker,name=omer5628/sentinel-train:${BUILD_NUMBER},dest=sentinel-train.tar
                     '''
                 }
             }
@@ -201,6 +211,13 @@ spec:
 
                         trivy image \
                         --input sentinel-worker.tar \
+                        --scanners vuln \
+                        --severity CRITICAL \
+                        --exit-code 1 \
+                        --ignorefile .trivyignore.yaml
+
+                        trivy image \
+                        --input sentinel-train.tar \
                         --scanners vuln \
                         --severity CRITICAL \
                         --exit-code 1 \
@@ -234,6 +251,10 @@ spec:
                             skopeo copy \
                             docker-archive:sentinel-worker.tar \
                             docker://docker.io/omer5628/sentinel-worker:${BUILD_NUMBER}
+
+                            skopeo copy \
+                            docker-archive:sentinel-train.tar \
+                            docker://docker.io/omer5628/sentinel-train:${BUILD_NUMBER}
                         '''
                     }
                 }
@@ -340,6 +361,7 @@ spec:
             sh '''
                 rm -f sentinel-api.tar
                 rm -f sentinel-worker.tar
+                rm -f sentinel-train.tar
                 rm -f openapi.json
             '''
         }

@@ -12,6 +12,10 @@ WORKDIR /app
 
 COPY --from=uv-source /uv /uvx /bin/
 
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml uv.lock ./
 
 RUN uv sync \
