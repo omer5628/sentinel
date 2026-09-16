@@ -1,5 +1,7 @@
 from collections.abc import Mapping
+from datetime import datetime
 from io import BytesIO
+import os
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,6 +19,13 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 
 from sentinel.features import preprocess_image
 from sentinel.model import MNISTClassifier
+from sentinel.retraining.fetch_data import (
+    DatabaseConfig,
+    create_postgres_connection,
+)
+from sentinel.retraining.human_data import (
+    load_human_labeled_dataset,
+)
 
 
 IMAGE_WIDTH = 28
@@ -131,6 +140,182 @@ def load_tensor_dataset(
         images,
         labels,
     )
+
+
+def get_retraining_cutoff_from_environment() -> datetime | None:
+    """Read the fixed retraining cutoff when retraining is enabled."""
+
+    raw_cutoff = os.getenv(
+        "RETRAINING_CUTOFF"
+    )
+
+    if raw_cutoff is None or not raw_cutoff.strip():
+        return None
+
+    try:
+        cutoff = datetime.fromisoformat(
+            raw_cutoff.strip()
+        )
+    except ValueError as error:
+        raise ValueError(
+            "RETRAINING_CUTOFF must be a valid ISO-8601 timestamp."
+        ) from error
+
+    if (
+        cutoff.tzinfo is None
+        or cutoff.utcoffset() is None
+    ):
+        raise ValueError(
+            "RETRAINING_CUTOFF must include a timezone."
+        )
+
+    return cutoff
+
+
+def combine_tensor_datasets(
+    base_dataset: TensorDataset,
+    human_dataset: TensorDataset,
+) -> TensorDataset:
+    """Combine base training data with human-labeled retraining data."""
+
+    base_images, base_labels = (
+        base_dataset.tensors
+    )
+
+    human_images, human_labels = (
+        human_dataset.tensors
+    )
+
+    base_sample_shape = tuple(
+        int(dimension)
+        for dimension in base_images.shape[1:]
+    )
+
+    human_sample_shape = tuple(
+        int(dimension)
+        for dimension in human_images.shape[1:]
+    )
+
+    if base_sample_shape != human_sample_shape:
+        raise ValueError(
+            "Base and human-labeled datasets have incompatible "
+            "sample shapes. "
+            f"Base={base_sample_shape}, "
+            f"human={human_sample_shape}."
+        )
+
+    if base_labels.ndim != 1 or human_labels.ndim != 1:
+        raise ValueError(
+            "Training labels must be one-dimensional."
+        )
+
+    combined_images = torch.cat(
+        (
+            base_images,
+            human_images,
+        ),
+        dim=0,
+    )
+
+    combined_labels = torch.cat(
+        (
+            base_labels,
+            human_labels,
+        ),
+        dim=0,
+    )
+
+    return TensorDataset(
+        combined_images,
+        combined_labels,
+    )
+
+
+def add_human_retraining_data(
+    base_dataset: TensorDataset,
+) -> TensorDataset:
+    """Add eligible human-labeled data when retraining is configured."""
+
+    cutoff = (
+        get_retraining_cutoff_from_environment()
+    )
+
+    if cutoff is None:
+        print(
+            "RETRAINING_CUTOFF is not configured. "
+            "Using the base training dataset only."
+        )
+
+        return base_dataset
+
+    discard_label = os.getenv(
+        "RETRAINING_DISCARD_LABEL"
+    )
+
+    if discard_label is None or not discard_label.strip():
+        raise RuntimeError(
+            "RETRAINING_DISCARD_LABEL is required "
+            "when RETRAINING_CUTOFF is configured."
+        )
+
+    base_images, _ = (
+        base_dataset.tensors
+    )
+
+    expected_sample_shape = tuple(
+        int(dimension)
+        for dimension in base_images.shape[1:]
+    )
+
+    database_config = (
+        DatabaseConfig.from_environment()
+    )
+
+    connection = create_postgres_connection(
+        database_config
+    )
+
+    try:
+        human_dataset = (
+            load_human_labeled_dataset(
+                connection,
+                cutoff=cutoff,
+                discard_label=discard_label.strip(),
+                expected_sample_shape=(
+                    expected_sample_shape
+                ),
+                label_to_index=CLASS_LABELS,
+            )
+        )
+    finally:
+        connection.close()
+
+    combined_dataset = combine_tensor_datasets(
+        base_dataset,
+        human_dataset,
+    )
+
+    print(
+        "Retraining dataset prepared:"
+    )
+
+    print(
+        f"Base samples: {len(base_dataset)}"
+    )
+
+    print(
+        f"Human-labeled samples: {len(human_dataset)}"
+    )
+
+    print(
+        f"Combined samples: {len(combined_dataset)}"
+    )
+
+    print(
+        f"Retraining cutoff: {cutoff.isoformat()}"
+    )
+
+    return combined_dataset
 
 
 def create_data_loaders(
@@ -483,8 +668,12 @@ def train(cfg: DictConfig) -> None:
         "Preparing tensors with shared preprocessing..."
     )
 
-    tensor_dataset = load_tensor_dataset(
+    base_tensor_dataset = load_tensor_dataset(
         dataset_file
+    )
+
+    tensor_dataset = add_human_retraining_data(
+        base_tensor_dataset
     )
 
     training_loader, validation_loader = create_data_loaders(
