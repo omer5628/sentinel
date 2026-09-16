@@ -172,6 +172,46 @@ def get_retraining_cutoff_from_environment() -> datetime | None:
     return cutoff
 
 
+def apply_retraining_runtime_config(
+    cfg: DictConfig,
+) -> DictConfig:
+    """Apply runtime model metadata for a retraining execution."""
+
+    model_version = os.getenv(
+        "RETRAINING_MODEL_VERSION"
+    )
+
+    if model_version is None or not model_version.strip():
+        return cfg
+
+    model_version = model_version.strip()
+
+    model_output_path = os.getenv(
+        "RETRAINING_MODEL_OUTPUT_PATH"
+    )
+
+    if model_output_path is None or not model_output_path.strip():
+        model_output_path = (
+            f"artifacts/model-{model_version}.pt"
+        )
+
+    experiment_name = os.getenv(
+        "RETRAINING_EXPERIMENT_NAME"
+    )
+
+    cfg.model.version = model_version
+    cfg.model.output_path = model_output_path.strip()
+
+    if (
+        experiment_name is not None
+        and experiment_name.strip()
+    ):
+        cfg.project.experiment_name = (
+            experiment_name.strip()
+        )
+
+    return cfg
+
 def combine_tensor_datasets(
     base_dataset: TensorDataset,
     human_dataset: TensorDataset,
@@ -848,6 +888,10 @@ def main() -> None:
         cfg = compose(
             config_name="config",
         )
+
+    cfg = apply_retraining_runtime_config(
+        cfg
+    )
 
     train(cfg)
 

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-
+from omegaconf import OmegaConf
 import pytest
 import torch
 from torch.utils.data import TensorDataset
@@ -7,6 +7,7 @@ from torch.utils.data import TensorDataset
 from sentinel.train import (
     combine_tensor_datasets,
     get_retraining_cutoff_from_environment,
+    apply_retraining_runtime_config,
 )
 
 
@@ -141,3 +142,79 @@ def test_combining_datasets_rejects_incompatible_shapes() -> None:
             base_dataset,
             human_dataset,
         )
+
+
+def test_retraining_runtime_config_is_optional(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(
+        "RETRAINING_MODEL_VERSION",
+        raising=False,
+    )
+
+    cfg = OmegaConf.create(
+        {
+            "project": {
+                "experiment_name": "training-v1",
+            },
+            "model": {
+                "version": "v1",
+                "output_path": "artifacts/model-v1.pt",
+            },
+        }
+    )
+
+    updated = apply_retraining_runtime_config(
+        cfg
+    )
+
+    assert updated.model.version == "v1"
+    assert (
+        updated.model.output_path
+        == "artifacts/model-v1.pt"
+    )
+
+
+def test_retraining_runtime_config_sets_unique_model_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "RETRAINING_MODEL_VERSION",
+        "retrain-43",
+    )
+
+    monkeypatch.setenv(
+        "RETRAINING_EXPERIMENT_NAME",
+        "retraining-43",
+    )
+
+    cfg = OmegaConf.create(
+        {
+            "project": {
+                "experiment_name": "training-v1",
+            },
+            "model": {
+                "version": "v1",
+                "output_path": "artifacts/model-v1.pt",
+            },
+        }
+    )
+
+    updated = apply_retraining_runtime_config(
+        cfg
+    )
+
+    assert (
+        updated.model.version
+        == "retrain-43"
+    )
+
+    assert (
+        updated.model.output_path
+        == "artifacts/model-retrain-43.pt"
+    )
+
+    assert (
+        updated.project.experiment_name
+        == "retraining-43"
+    )
