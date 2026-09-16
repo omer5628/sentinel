@@ -103,7 +103,7 @@ spec:
 
     options {
         disableConcurrentBuilds()
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
     }
 
     stages {
@@ -523,7 +523,7 @@ spec:
                                   --namespace sentinel-dev \
                                   --for=condition=complete \
                                   "job/${JOB_NAME}" \
-                                  --timeout=15m
+                                  --timeout=30m
                                 then
                                     echo "Retraining Train Job did not complete successfully."
 
