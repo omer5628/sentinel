@@ -36,7 +36,9 @@ data:
         WHERE label IS NOT NULL;
 
     CREATE OR REPLACE FUNCTION prevent_feature_log_history_mutation()
-    RETURNS TRIGGER AS $$
+    RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS '
     BEGIN
         IF NEW.event_id IS DISTINCT FROM OLD.event_id
            OR NEW.image_id IS DISTINCT FROM OLD.image_id
@@ -46,12 +48,12 @@ data:
            OR NEW.model_version IS DISTINCT FROM OLD.model_version
         THEN
             RAISE EXCEPTION
-                'Historical feature fields in feature_log are immutable';
+                ''Historical feature fields in feature_log are immutable'';
         END IF;
 
         RETURN NEW;
     END;
-    $$ LANGUAGE plpgsql;
+    ';
 
     DROP TRIGGER IF EXISTS feature_log_history_immutable
         ON feature_log;
