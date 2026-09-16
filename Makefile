@@ -9,6 +9,7 @@
 	ui-api-local ui-frontend-local ui-up ui-stop \
 	minikube-up minikube-stop minikube-delete \
 	k8s-apply k8s-observability-apply k8s-serving-deploy \
+        k8s-clearml-retraining-credentials-sync \
 	k8s-status k8s-worker-logs k8s-api-logs \
 	k8s-rabbitmq-forward k8s-postgres-forward producer-k8s \
 	k8s-postgres-count \
@@ -56,6 +57,8 @@ help:
 	@echo "  make k8s-observability-apply Apply observability stack"
 	@echo "  make k8s-serving-deploy SERVING_TASK_ID=<id>"
 	@echo "                               Deploy ClearML Serving with Helm"
+	@echo "  make k8s-clearml-retraining-credentials-sync"
+	@echo "                               Sync ClearML retraining credentials"
 	@echo "  make k8s-status              Show Sentinel Kubernetes resources"
 	@echo "  make k8s-worker-logs         Follow Kubernetes worker logs"
 	@echo "  make k8s-api-logs            Follow Kubernetes API logs"
@@ -351,6 +354,9 @@ k8s-serving-deploy:
 	fi
 	SERVING_TASK_ID="$(SERVING_TASK_ID)" \
 		./scripts/deploy_clearml_serving.sh
+
+k8s-clearml-retraining-credentials-sync:
+	@./scripts/sync_clearml_retraining_credentials.sh
 
 k8s-status:
 	kubectl get pods,services,statefulsets,deployments,pvc
