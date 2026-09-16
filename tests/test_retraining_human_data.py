@@ -165,6 +165,7 @@ def test_loader_uses_same_retraining_cutoff_filter() -> None:
 
     assert "label <> %s" in query
     assert "labeled_at <= %s" in query
+    assert "timestamp <= labeled_at" in query
 
     assert params == (
         "Discard",

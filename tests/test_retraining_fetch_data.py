@@ -165,6 +165,11 @@ def test_retraining_counts_only_rows_after_checkpoint_as_new() -> None:
     assert result.eligible_rows == 2500
     assert result.new_rows == 1000
     assert result.should_retrain is True
+    new_rows_query = cursor.executed[3]
+
+    assert "timestamp <= labeled_at" in new_rows_query[0]
+    assert "labeled_at > %s" in new_rows_query[0]
+    assert "labeled_at <= %s" in new_rows_query[0]
 
 
 def test_retraining_gate_uses_discard_label_filter() -> None:
@@ -205,7 +210,9 @@ def test_retraining_gate_uses_discard_label_filter() -> None:
     new_rows_query = cursor.executed[3]
 
     assert "label <> %s" in eligible_query[0]
+    assert "timestamp <= labeled_at" in eligible_query[0]
     assert eligible_query[1][0] == "Discard"
 
     assert "label <> %s" in new_rows_query[0]
+    assert "timestamp <= labeled_at" in new_rows_query[0]
     assert new_rows_query[1][0] == "Discard"

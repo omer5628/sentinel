@@ -212,6 +212,7 @@ def _count_eligible_rows(
         WHERE label IS NOT NULL
           AND label <> %s
           AND labeled_at IS NOT NULL
+          AND timestamp <= labeled_at
           AND labeled_at <= %s
         """,
         (
@@ -247,6 +248,7 @@ def _count_new_rows(
             WHERE label IS NOT NULL
               AND label <> %s
               AND labeled_at IS NOT NULL
+              AND timestamp <= labeled_at
               AND labeled_at <= %s
             """,
             (
@@ -262,6 +264,7 @@ def _count_new_rows(
             WHERE label IS NOT NULL
               AND label <> %s
               AND labeled_at IS NOT NULL
+              AND timestamp <= labeled_at
               AND labeled_at > %s
               AND labeled_at <= %s
             """,

@@ -40,6 +40,7 @@ def load_human_labeled_dataset(
             WHERE label IS NOT NULL
               AND label <> %s
               AND labeled_at IS NOT NULL
+              AND timestamp <= labeled_at
               AND labeled_at <= %s
             ORDER BY labeled_at ASC, event_id ASC
             """,
