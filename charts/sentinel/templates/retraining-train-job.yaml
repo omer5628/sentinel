@@ -1,0 +1,139 @@
+{{- if and .Values.retraining.enabled .Values.retraining.train.enabled }}
+
+{{- $runId := required
+    "retraining.runId is required when retraining is enabled"
+    .Values.retraining.runId
+-}}
+
+{{- $cutoff := required
+    "retraining.cutoff is required when retraining is enabled"
+    .Values.retraining.cutoff
+-}}
+
+{{- $trainTag := required
+    "retraining.train.image.tag is required when retraining is enabled"
+    .Values.retraining.train.image.tag
+-}}
+
+{{- $clearmlApiHost := required
+    "retraining.clearml.apiHost is required when retraining is enabled"
+    .Values.retraining.clearml.apiHost
+-}}
+
+{{- $clearmlFilesHost := required
+    "retraining.clearml.filesHost is required when retraining is enabled"
+    .Values.retraining.clearml.filesHost
+-}}
+
+{{- $clearmlWebHost := required
+    "retraining.clearml.webHost is required when retraining is enabled"
+    .Values.retraining.clearml.webHost
+-}}
+
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: "sentinel-retraining-train-{{ $runId }}"
+  labels:
+    app.kubernetes.io/name: sentinel-retraining-train
+    app.kubernetes.io/component: retraining
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  backoffLimit: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel-retraining-train
+        app.kubernetes.io/component: retraining
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      {{- if .Values.registry.existingPullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.registry.existingPullSecret | quote }}
+      {{- end }}
+
+      containers:
+        - name: retraining-train
+          image: "{{ .Values.retraining.train.image.repository }}:{{ $trainTag }}"
+          imagePullPolicy: {{ .Values.retraining.train.image.pullPolicy }}
+
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_HOST
+
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_PORT
+
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_DB
+
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_USER
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_PASSWORD
+
+            - name: RETRAINING_CUTOFF
+              value: {{ $cutoff | quote }}
+
+            - name: RETRAINING_DISCARD_LABEL
+              value: {{ .Values.retraining.discardLabel | quote }}
+
+            - name: RETRAINING_MODEL_VERSION
+              value: {{ printf "retrain-%s" $runId | quote }}
+
+            - name: RETRAINING_EXPERIMENT_NAME
+              value: {{ printf "retraining-%s" $runId | quote }}
+
+            - name: CLEARML_API_HOST
+              value: {{ $clearmlApiHost | quote }}
+
+            - name: CLEARML_FILES_HOST
+              value: {{ $clearmlFilesHost | quote }}
+
+            - name: CLEARML_WEB_HOST
+              value: {{ $clearmlWebHost | quote }}
+
+            - name: CLEARML_API_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.retraining.clearml.existingSecret | quote }}
+                  key: CLEARML_API_ACCESS_KEY
+
+            - name: CLEARML_API_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.retraining.clearml.existingSecret | quote }}
+                  key: CLEARML_API_SECRET_KEY
+
+          resources:
+            requests:
+              cpu: {{ .Values.retraining.trainResources.requests.cpu | quote }}
+              memory: {{ .Values.retraining.trainResources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.retraining.trainResources.limits.cpu | quote }}
+              memory: {{ .Values.retraining.trainResources.limits.memory | quote }}
+
+{{- end }}

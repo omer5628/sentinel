@@ -34,3 +34,9 @@ alertmanager:
 grafana:
   service:
     type: ClusterIP
+
+retraining:
+  clearml:
+    apiHost: "http://192.168.49.1:8008"
+    filesHost: "http://192.168.49.1:8081"
+    webHost: "http://192.168.49.1:8080"

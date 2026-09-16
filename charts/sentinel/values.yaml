@@ -314,10 +314,25 @@ retraining:
   enabled: false
 
   runId: ""
+  cutoff: ""
   pipelineName: "sentinel-retraining"
 
   minimumNewRows: 1000
   discardLabel: "Discard"
+
+  train:
+    enabled: false
+
+    image:
+      repository: omer5628/sentinel-train
+      tag: ""
+      pullPolicy: Always
+
+  clearml:
+    apiHost: ""
+    filesHost: ""
+    webHost: ""
+    existingSecret: "clearml-retraining-credentials"
 
   resources:
     requests:
@@ -326,3 +341,11 @@ retraining:
     limits:
       cpu: "500m"
       memory: "512Mi"
+
+  trainResources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
