@@ -726,7 +726,206 @@ spec:
 
                     echo(
                         'Retraining completed successfully. ' +
-                        'Checkpoint has not been updated yet.'
+                        'Checkpoint update will run next.'
+                    )
+                }
+            }
+        }
+
+        stage('Render Checkpoint Job') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+
+                        test -s .retraining-worker-tag
+                        test -s .retraining-cutoff
+
+                        WORKER_TAG="$(
+                            cat .retraining-worker-tag
+                        )"
+
+                        RETRAINING_CUTOFF="$(
+                            cat .retraining-cutoff
+                        )"
+
+                        case "$WORKER_TAG" in
+                            ''|*[!0-9]*)
+                                echo "Invalid retraining worker tag: $WORKER_TAG"
+                                exit 1
+                                ;;
+                        esac
+
+                        if [ -z "$RETRAINING_CUTOFF" ]; then
+                            echo "Retraining cutoff is missing."
+                            exit 1
+                        fi
+
+                        helm template sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.checkpoint.enabled=true \
+                          --set retraining.validation.enabled=false \
+                          --set-string retraining.runId="${BUILD_NUMBER}" \
+                          --set-string retraining.cutoff="${RETRAINING_CUTOFF}" \
+                          --set-string worker.image.tag="${WORKER_TAG}" \
+                          --show-only templates/retraining-checkpoint-job.yaml \
+                          > retraining-checkpoint-job.yaml
+
+                        test -s retraining-checkpoint-job.yaml
+
+                        grep -F \
+                          "sentinel-retraining-checkpoint-${BUILD_NUMBER}" \
+                          retraining-checkpoint-job.yaml \
+                          > /dev/null
+
+                        CHECKPOINT_IMAGE="$(
+                            sed -n \
+                              's/^[[:space:]]*image: "\\(.*\\)"$/\\1/p' \
+                              retraining-checkpoint-job.yaml \
+                            | head -n 1
+                        )"
+
+                        if [ -z "$CHECKPOINT_IMAGE" ]; then
+                            echo "Unable to resolve rendered checkpoint image."
+                            exit 1
+                        fi
+
+                        case "$CHECKPOINT_IMAGE" in
+                            *:"${WORKER_TAG}")
+                                ;;
+                            *)
+                                echo "Checkpoint image tag does not match deployed worker tag."
+                                echo "Rendered checkpoint image: $CHECKPOINT_IMAGE"
+                                echo "Expected immutable tag: $WORKER_TAG"
+                                exit 1
+                                ;;
+                        esac
+
+                        grep -F \
+                          "value: \\"${RETRAINING_CUTOFF}\\"" \
+                          retraining-checkpoint-job.yaml \
+                          > /dev/null
+
+                        echo "Using checkpoint image: $CHECKPOINT_IMAGE"
+                        echo "Checkpoint Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Update Checkpoint') {
+            steps {
+                script {
+                    def checkpointStatus
+
+                    container('kubectl') {
+                        checkpointStatus = sh(
+                            script: '''
+                                set -u
+
+                                JOB_NAME="sentinel-retraining-checkpoint-${BUILD_NUMBER}"
+
+                                if ! kubectl create \
+                                  --namespace sentinel-dev \
+                                  -f retraining-checkpoint-job.yaml
+                                then
+                                    echo "Failed to create retraining Checkpoint Job."
+                                    exit 1
+                                fi
+
+                                if ! kubectl wait \
+                                  --namespace sentinel-dev \
+                                  --for=condition=complete \
+                                  "job/${JOB_NAME}" \
+                                  --timeout=2m
+                                then
+                                    echo "Retraining Checkpoint Job did not complete successfully."
+
+                                    kubectl describe \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      || true
+
+                                    kubectl logs \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      --all-containers=true \
+                                      > retraining-checkpoint.log \
+                                      2>&1 \
+                                      || true
+
+                                    cat retraining-checkpoint.log || true
+
+                                    exit 1
+                                fi
+
+                                kubectl logs \
+                                  --namespace sentinel-dev \
+                                  "job/${JOB_NAME}" \
+                                  --all-containers=true \
+                                  > retraining-checkpoint.log \
+                                  2>&1
+
+                                cat retraining-checkpoint.log
+
+                                CHECKPOINT_STATUS="$(
+                                    sed -n \
+                                      's/^checkpoint_status=//p' \
+                                      retraining-checkpoint.log \
+                                    | tail -n 1
+                                )"
+
+                                case "$CHECKPOINT_STATUS" in
+                                    advanced|unchanged)
+                                        ;;
+                                    *)
+                                        echo "Invalid checkpoint status: $CHECKPOINT_STATUS"
+                                        exit 1
+                                        ;;
+                                esac
+
+                                EXPECTED_CUTOFF="$(
+                                    cat .retraining-cutoff
+                                )"
+
+                                ACTUAL_CUTOFF="$(
+                                    sed -n \
+                                      's/^last_successful_cutoff=//p' \
+                                      retraining-checkpoint.log \
+                                    | tail -n 1
+                                )"
+
+                                if [ "$ACTUAL_CUTOFF" != "$EXPECTED_CUTOFF" ]; then
+                                    echo "Stored checkpoint does not match retraining cutoff."
+                                    echo "Expected: $EXPECTED_CUTOFF"
+                                    echo "Actual:   $ACTUAL_CUTOFF"
+                                    exit 1
+                                fi
+
+                                echo "Retraining checkpoint verified successfully."
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+
+                    archiveArtifacts(
+                        artifacts: 'retraining-checkpoint.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+
+                    if (checkpointStatus != 0) {
+                        error(
+                            'Retraining Checkpoint Job failed.'
+                        )
+                    }
+
+                    echo(
+                        'Retraining pipeline completed successfully ' +
+                        'and the successful cutoff was persisted.'
                     )
                 }
             }
@@ -757,6 +956,13 @@ spec:
                       --ignore-not-found=true \
                       --wait=false \
                       || true
+
+                    kubectl delete job \
+                      "sentinel-retraining-checkpoint-${BUILD_NUMBER}" \
+                      --namespace sentinel-dev \
+                      --ignore-not-found=true \
+                      --wait=false \
+                      || true
                 '''
             }
 
@@ -767,6 +973,8 @@ spec:
                 rm -f retraining-validation.log
                 rm -f retraining-train-job.yaml
                 rm -f retraining-train.log
+                rm -f retraining-checkpoint-job.yaml
+                rm -f retraining-checkpoint.log
                 rm -f .retraining-worker-repository
                 rm -f .retraining-worker-tag
                 rm -f .retraining-gate-status

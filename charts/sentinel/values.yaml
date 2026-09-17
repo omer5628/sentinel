@@ -339,6 +339,9 @@ retraining:
         cpu: "500m"
         memory: "1Gi"
 
+  checkpoint:
+    enabled: false
+
   train:
     enabled: false
 

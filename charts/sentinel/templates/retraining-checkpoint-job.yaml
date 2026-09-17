@@ -1,4 +1,5 @@
-{{- if .Values.retraining.enabled }}
+{{- $checkpoint := .Values.retraining.checkpoint | default dict -}}
+{{- if and .Values.retraining.enabled ($checkpoint.enabled | default false) }}
 
 {{- $runId := required
     "retraining.runId is required when retraining is enabled"
