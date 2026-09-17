@@ -436,6 +436,160 @@ spec:
             }
         }
 
+        stage('Render Validation Job') {
+            steps {
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        WORKER_TAG="$(
+                            cat .retraining-worker-tag
+                        )"
+
+                        RETRAINING_CUTOFF="$(
+                            cat .retraining-cutoff
+                        )"
+
+                        helm template sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.validation.enabled=true \
+                          --set-string retraining.runId="${BUILD_NUMBER}" \
+                          --set-string retraining.cutoff="${RETRAINING_CUTOFF}" \
+                          --set-string retraining.validation.image.tag="${WORKER_TAG}" \
+                          --show-only templates/retraining-validation-job.yaml \
+                          > retraining-validation-job.yaml
+
+                        test -s retraining-validation-job.yaml
+
+                        grep -F \
+                          "sentinel-retraining-validation-${BUILD_NUMBER}" \
+                          retraining-validation-job.yaml \
+                          > /dev/null
+
+                        VALIDATOR_IMAGE="$(
+                            sed -n \
+                              's/^[[:space:]]*image: "\\(.*\\)"$/\\1/p' \
+                              retraining-validation-job.yaml \
+                            | head -n 1
+                        )"
+
+                        if [ -z "$VALIDATOR_IMAGE" ]; then
+                            echo "Unable to resolve rendered validator image."
+                            exit 1
+                        fi
+
+                        case "$VALIDATOR_IMAGE" in
+                            *:"${WORKER_TAG}")
+                                ;;
+                            *)
+                                echo "Validator image tag does not match deployed worker tag."
+                                echo "Rendered validator image: $VALIDATOR_IMAGE"
+                                echo "Expected immutable tag: $WORKER_TAG"
+                                exit 1
+                                ;;
+                        esac
+
+                        echo "Using validator image: $VALIDATOR_IMAGE"
+                        echo "Retraining Validation Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Validate Training Data') {
+            steps {
+                script {
+                    def validationStatus
+
+                    container('kubectl') {
+                        validationStatus = sh(
+                            script: '''
+                                set -u
+
+                                JOB_NAME="sentinel-retraining-validation-${BUILD_NUMBER}"
+
+                                if ! kubectl create \
+                                  --namespace sentinel-dev \
+                                  -f retraining-validation-job.yaml
+                                then
+                                    echo "Failed to create retraining Validation Job."
+                                    exit 1
+                                fi
+
+                                if ! kubectl wait \
+                                  --namespace sentinel-dev \
+                                  --for=condition=complete \
+                                  "job/${JOB_NAME}" \
+                                  --timeout=5m
+                                then
+                                    echo "Retraining Validation Job did not complete successfully."
+
+                                    kubectl describe \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      || true
+
+                                    kubectl logs \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      --all-containers=true \
+                                      > retraining-validation.log \
+                                      2>&1 \
+                                      || true
+
+                                    cat retraining-validation.log || true
+
+                                    exit 1
+                                fi
+
+                                kubectl logs \
+                                  --namespace sentinel-dev \
+                                  "job/${JOB_NAME}" \
+                                  --all-containers=true \
+                                  > retraining-validation.log \
+                                  2>&1
+
+                                cat retraining-validation.log
+
+                                VALIDATION_STATUS="$(
+                                    sed -n \
+                                      's/^validation_status=//p' \
+                                      retraining-validation.log \
+                                    | tail -n 1
+                                )"
+
+                                if [ "$VALIDATION_STATUS" != "passed" ]; then
+                                    echo "Training data validation did not report a passing status."
+                                    echo "validation_status=${VALIDATION_STATUS}"
+                                    exit 1
+                                fi
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+
+                    archiveArtifacts(
+                        artifacts: 'retraining-validation.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+
+                    if (validationStatus != 0) {
+                        error(
+                            'Retraining training-data validation failed.'
+                        )
+                    }
+
+                    echo(
+                        'Retraining training-data validation passed.'
+                    )
+                }
+            }
+        }
+
         stage('Render Train Job') {
             steps {
                 container('helm') {
@@ -591,6 +745,13 @@ spec:
                       || true
 
                     kubectl delete job \
+                      "sentinel-retraining-validation-${BUILD_NUMBER}" \
+                      --namespace sentinel-dev \
+                      --ignore-not-found=true \
+                      --wait=false \
+                      || true
+
+                    kubectl delete job \
                       "sentinel-retraining-train-${BUILD_NUMBER}" \
                       --namespace sentinel-dev \
                       --ignore-not-found=true \
@@ -602,6 +763,8 @@ spec:
             sh '''
                 rm -f retraining-fetch-job.yaml
                 rm -f retraining-fetch.log
+                rm -f retraining-validation-job.yaml
+                rm -f retraining-validation.log
                 rm -f retraining-train-job.yaml
                 rm -f retraining-train.log
                 rm -f .retraining-worker-repository
