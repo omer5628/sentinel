@@ -1,0 +1,112 @@
+{{- if and .Values.retraining.enabled .Values.retraining.validation.enabled }}
+
+{{- $runId := required
+    "retraining.runId is required when retraining validation is enabled"
+    .Values.retraining.runId
+-}}
+
+{{- $cutoff := required
+    "retraining.cutoff is required when retraining validation is enabled"
+    .Values.retraining.cutoff
+-}}
+
+{{- $validatorTag := required
+    "retraining.validation.image.tag is required when retraining validation is enabled"
+    .Values.retraining.validation.image.tag
+-}}
+
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: "sentinel-retraining-validation-{{ $runId }}"
+  labels:
+    app.kubernetes.io/name: sentinel-retraining-validation
+    app.kubernetes.io/component: retraining
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  backoffLimit: 0
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel-retraining-validation
+        app.kubernetes.io/component: retraining
+        app.kubernetes.io/part-of: sentinel
+
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      {{- if .Values.registry.existingPullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.registry.existingPullSecret | quote }}
+      {{- end }}
+
+      containers:
+        - name: retraining-validation
+          image: "{{ .Values.retraining.validation.image.repository }}:{{ $validatorTag }}"
+          imagePullPolicy: {{ .Values.retraining.validation.image.pullPolicy }}
+
+          command:
+            - python
+            - -m
+            - sentinel.retraining.validate_data
+
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_HOST
+
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_PORT
+
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-common-config
+                  key: POSTGRES_DB
+
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_USER
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | quote }}
+                  key: POSTGRES_PASSWORD
+
+            - name: RETRAINING_PIPELINE_NAME
+              value: {{ .Values.retraining.pipelineName | quote }}
+
+            - name: RETRAINING_CUTOFF
+              value: {{ $cutoff | quote }}
+
+            - name: RETRAINING_DISCARD_LABEL
+              value: {{ .Values.retraining.discardLabel | quote }}
+
+            - name: RETRAINING_MAX_NULL_FRACTION
+              value: {{ .Values.retraining.validation.maxNullFraction | quote }}
+
+            - name: RETRAINING_MAX_LABEL_KL_DIVERGENCE
+              value: {{ .Values.retraining.validation.maxLabelKLDivergence | quote }}
+
+          resources:
+            requests:
+              cpu: {{ .Values.retraining.validation.resources.requests.cpu | quote }}
+              memory: {{ .Values.retraining.validation.resources.requests.memory | quote }}
+
+            limits:
+              cpu: {{ .Values.retraining.validation.resources.limits.cpu | quote }}
+              memory: {{ .Values.retraining.validation.resources.limits.memory | quote }}
+
+{{- end }}
