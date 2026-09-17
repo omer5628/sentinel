@@ -130,8 +130,8 @@ spec:
     stages {
         stage('Test') {
             steps {
-                sh 'uv sync --frozen'
-                sh 'uv run pytest'
+                sh 'uv sync --frozen --group validation'
+                sh 'uv run --frozen --group validation pytest'
             }
         }
 
@@ -171,7 +171,8 @@ spec:
                         rm -f \
                           sentinel-api.tar \
                           sentinel-worker.tar \
-                          sentinel-train.tar
+                          sentinel-train.tar \
+                          sentinel-validator.tar
 
                         buildctl-daemonless.sh build \
                         --frontend dockerfile.v0 \
@@ -193,6 +194,13 @@ spec:
                         --local dockerfile=. \
                         --opt filename=Dockerfile.train \
                         --output type=docker,name=omer5628/sentinel-train:${BUILD_NUMBER},dest=sentinel-train.tar
+
+                        buildctl-daemonless.sh build \
+                        --frontend dockerfile.v0 \
+                        --local context=. \
+                        --local dockerfile=. \
+                        --opt filename=Dockerfile.validator \
+                        --output type=docker,name=omer5628/sentinel-validator:${BUILD_NUMBER},dest=sentinel-validator.tar
                     '''
                 }
             }
@@ -218,6 +226,13 @@ spec:
 
                         trivy image \
                         --input sentinel-train.tar \
+                        --scanners vuln \
+                        --severity CRITICAL \
+                        --exit-code 1 \
+                        --ignorefile .trivyignore.yaml
+
+                        trivy image \
+                        --input sentinel-validator.tar \
                         --scanners vuln \
                         --severity CRITICAL \
                         --exit-code 1 \
@@ -255,6 +270,10 @@ spec:
                             skopeo copy \
                             docker-archive:sentinel-train.tar \
                             docker://docker.io/omer5628/sentinel-train:${BUILD_NUMBER}
+
+                            skopeo copy \
+                            docker-archive:sentinel-validator.tar \
+                            docker://docker.io/omer5628/sentinel-validator:${BUILD_NUMBER}
                         '''
                     }
                 }
@@ -362,6 +381,7 @@ spec:
                 rm -f sentinel-api.tar
                 rm -f sentinel-worker.tar
                 rm -f sentinel-train.tar
+                rm -f sentinel-validator.tar
                 rm -f openapi.json
             '''
         }
