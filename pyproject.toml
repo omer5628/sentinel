@@ -46,6 +46,10 @@ dev = [
     "pytest",
     "ruff",
 ]
+validation = [
+    "great-expectations>=1.23.0",
+    "psycopg2-binary>=2.9.12",
+]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }

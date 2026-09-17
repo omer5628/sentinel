@@ -320,6 +320,25 @@ retraining:
   minimumNewRows: 1000
   discardLabel: "Discard"
 
+  validation:
+    enabled: true
+
+    maxNullFraction: 0.01
+    maxLabelKLDivergence: 0.1
+
+    image:
+      repository: omer5628/sentinel-validator
+      tag: ""
+      pullPolicy: Always
+
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+
   train:
     enabled: false
 
