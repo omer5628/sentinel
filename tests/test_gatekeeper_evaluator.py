@@ -5,9 +5,11 @@ import pytest
 
 from sentinel.gatekeeper.contracts import GoldenSample
 from sentinel.gatekeeper.evaluator import (
-    accuracy_metric,
     compare_models,
     evaluate_model,
+)
+from sentinel.gatekeeper.metrics import (
+    accuracy_metric,
 )
 
 

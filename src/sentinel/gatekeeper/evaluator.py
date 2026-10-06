@@ -1,17 +1,17 @@
 import math
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import (
+    Hashable,
+    Sequence,
+)
 from dataclasses import dataclass
 
 from sentinel.gatekeeper.contracts import (
     GoldenSample,
     ModelAdapter,
 )
-
-
-MetricFunction = Callable[
-    [Sequence[Hashable], Sequence[Hashable]],
-    float,
-]
+from sentinel.gatekeeper.metrics import (
+    MetricFunction,
+)
 
 
 @dataclass(frozen=True)
@@ -30,37 +30,6 @@ class ComparisonResult:
     current: EvaluationResult
     candidate: EvaluationResult
     score_delta: float
-
-
-def accuracy_metric(
-    expected_labels: Sequence[Hashable],
-    predicted_labels: Sequence[Hashable],
-) -> float:
-    """Calculate classification accuracy."""
-
-    if not expected_labels:
-        raise ValueError(
-            "Expected labels cannot be empty."
-        )
-
-    if len(expected_labels) != len(predicted_labels):
-        raise ValueError(
-            "Expected and predicted label counts must match."
-        )
-
-    correct_predictions = sum(
-        expected == predicted
-        for expected, predicted in zip(
-            expected_labels,
-            predicted_labels,
-            strict=True,
-        )
-    )
-
-    return (
-        correct_predictions
-        / len(expected_labels)
-    )
 
 
 def evaluate_model(
