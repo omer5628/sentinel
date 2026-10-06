@@ -1,5 +1,6 @@
 defaults:
   - gatekeeper: default
+  - gatekeeper/adapters: mnist
   - _self_
 
 project:

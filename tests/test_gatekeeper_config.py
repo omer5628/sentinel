@@ -20,6 +20,14 @@ def create_config():
                 "metric": "accuracy",
                 "direction": "maximize",
             },
+            "adapters": {
+                "golden_set": (
+                    "example.adapters:GoldenSetAdapter"
+                ),
+                "model": (
+                    "example.adapters:ModelAdapter"
+                ),
+            },
             "policy": {
                 "max_regression": 0.0,
                 "candidate_score_threshold": None,
@@ -42,11 +50,22 @@ def test_load_gatekeeper_config() -> None:
     )
     assert result.required_samples == 100
     assert result.metric_name == "accuracy"
+
+    assert result.golden_set_adapter_reference == (
+        "example.adapters:GoldenSetAdapter"
+    )
+
+    assert result.model_adapter_reference == (
+        "example.adapters:ModelAdapter"
+    )
+
     assert (
         result.policy.metric_direction
         == "maximize"
     )
+
     assert result.policy.max_regression == 0.0
+
     assert (
         result.policy.candidate_score_threshold
         is None
@@ -103,6 +122,34 @@ def test_rejects_invalid_threshold_operator() -> None:
     with pytest.raises(
         ValueError,
         match="Unsupported threshold operator",
+    ):
+        load_gatekeeper_config(
+            cfg
+        )
+
+
+def test_rejects_empty_golden_set_adapter() -> None:
+    cfg = create_config()
+
+    cfg.adapters.golden_set = ""
+
+    with pytest.raises(
+        ValueError,
+        match="Golden-set adapter",
+    ):
+        load_gatekeeper_config(
+            cfg
+        )
+
+
+def test_rejects_empty_model_adapter() -> None:
+    cfg = create_config()
+
+    cfg.adapters.model = ""
+
+    with pytest.raises(
+        ValueError,
+        match="Model adapter",
     ):
         load_gatekeeper_config(
             cfg

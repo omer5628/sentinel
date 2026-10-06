@@ -30,7 +30,27 @@ class GatekeeperConfig:
     golden_set_path: Path
     required_samples: int
     metric_name: str
+    golden_set_adapter_reference: str
+    model_adapter_reference: str
     policy: GatePolicy
+
+
+def _read_plugin_reference(
+    value: object,
+    field_name: str,
+) -> str:
+    """Read and validate one configured plugin reference."""
+
+    reference = str(
+        value
+    ).strip()
+
+    if not reference:
+        raise ValueError(
+            f"{field_name} plugin reference cannot be empty."
+        )
+
+    return reference
 
 
 def load_gatekeeper_config(
@@ -84,6 +104,20 @@ def load_gatekeeper_config(
         raw_direction,
     )
 
+    golden_set_adapter_reference = (
+        _read_plugin_reference(
+            cfg.adapters.golden_set,
+            "Golden-set adapter",
+        )
+    )
+
+    model_adapter_reference = (
+        _read_plugin_reference(
+            cfg.adapters.model,
+            "Model adapter",
+        )
+    )
+
     max_regression = float(
         cfg.policy.max_regression
     )
@@ -127,5 +161,11 @@ def load_gatekeeper_config(
         golden_set_path=golden_set_path,
         required_samples=required_samples,
         metric_name=metric_name,
+        golden_set_adapter_reference=(
+            golden_set_adapter_reference
+        ),
+        model_adapter_reference=(
+            model_adapter_reference
+        ),
         policy=policy,
     )

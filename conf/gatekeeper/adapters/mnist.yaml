@@ -1,0 +1,2 @@
+golden_set: sentinel.adapters.mnist:MNISTGoldenSetAdapter
+model: sentinel.adapters.mnist:MNISTModelAdapter
