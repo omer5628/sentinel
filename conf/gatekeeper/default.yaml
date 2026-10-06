@@ -1,0 +1,14 @@
+enabled: true
+
+golden_set:
+  path: data/golden_set.csv
+  required_samples: 100
+
+evaluation:
+  metric: accuracy
+  direction: maximize
+
+policy:
+  max_regression: 0.0
+  candidate_score_threshold: null
+  threshold_operator: gte

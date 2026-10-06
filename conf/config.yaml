@@ -1,3 +1,7 @@
+defaults:
+  - gatekeeper: default
+  - _self_
+
 project:
   name: Sentinel
   experiment_name: training-v1
