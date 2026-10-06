@@ -1,7 +1,7 @@
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -12,6 +12,7 @@ class GoldenSample:
     label: Hashable
 
 
+@runtime_checkable
 class GoldenSetAdapter(Protocol):
     """Define how a model-specific dataset loads golden samples."""
 
@@ -23,6 +24,7 @@ class GoldenSetAdapter(Protocol):
         ...
 
 
+@runtime_checkable
 class ModelAdapter(Protocol):
     """Define how a model is loaded and used for prediction."""
 
