@@ -26,7 +26,9 @@ from sentinel.retraining.fetch_data import (
 from sentinel.retraining.human_data import (
     load_human_labeled_dataset,
 )
-
+from sentinel.retraining.holdout import (
+    apply_holdout_filter,
+)
 
 IMAGE_WIDTH = 28
 IMAGE_HEIGHT = 28
@@ -72,14 +74,79 @@ def row_to_image_bytes(pixel_values: np.ndarray) -> bytes:
 
 def load_tensor_dataset(
     dataset_file: Path,
+    *,
+    holdout_manifest_path: Path | None = None,
+    holdout_id_field: str | None = None,
+    holdout_filter_reference: str | None = None,
 ) -> TensorDataset:
     """Load MNIST CSV data using the shared preprocessing function."""
 
-    dataframe = pd.read_csv(dataset_file)
+    dataframe = pd.read_csv(
+        dataset_file
+    )
 
     if dataframe.empty:
         raise ValueError(
             "The MNIST dataset is empty."
+        )
+
+    holdout_requested = any(
+        value is not None
+        for value in (
+            holdout_manifest_path,
+            holdout_id_field,
+            holdout_filter_reference,
+        )
+    )
+
+    holdout_complete = all(
+        value is not None
+        for value in (
+            holdout_manifest_path,
+            holdout_id_field,
+            holdout_filter_reference,
+        )
+    )
+
+    if holdout_requested and not holdout_complete:
+        raise ValueError(
+            "Holdout filtering requires manifest path, "
+            "ID field, and filter reference."
+        )
+
+    if holdout_complete:
+        assert holdout_manifest_path is not None
+        assert holdout_id_field is not None
+        assert holdout_filter_reference is not None
+
+        original_sample_count = len(
+            dataframe
+        )
+
+        dataframe = apply_holdout_filter(
+            dataframe=dataframe,
+            manifest_path=holdout_manifest_path,
+            id_field=holdout_id_field,
+            filter_reference=holdout_filter_reference,
+        )
+
+        print(
+            "Applied immutable training holdout:"
+        )
+
+        print(
+            f"Base samples before holdout: "
+            f"{original_sample_count}"
+        )
+
+        print(
+            f"Base samples after holdout: "
+            f"{len(dataframe)}"
+        )
+
+        print(
+            f"Excluded holdout samples: "
+            f"{original_sample_count - len(dataframe)}"
         )
 
     label_column = next(
@@ -690,7 +757,9 @@ def train(cfg: DictConfig) -> None:
             f"{dataset_file}"
         )
 
-    print("Loaded training configuration:")
+    print(
+        "Loaded training configuration:"
+    )
 
     print(
         OmegaConf.to_yaml(cfg)
@@ -708,9 +777,29 @@ def train(cfg: DictConfig) -> None:
         "Preparing tensors with shared preprocessing..."
     )
 
-    base_tensor_dataset = load_tensor_dataset(
-        dataset_file
+    retraining_cutoff = (
+        get_retraining_cutoff_from_environment()
     )
+
+    if retraining_cutoff is None:
+        base_tensor_dataset = load_tensor_dataset(
+            dataset_file
+        )
+    else:
+        base_tensor_dataset = load_tensor_dataset(
+            dataset_file,
+            holdout_manifest_path=Path(
+                str(
+                    cfg.gatekeeper.adapters.holdout.manifest_path
+                )
+            ),
+            holdout_id_field=str(
+                cfg.gatekeeper.adapters.holdout.id_field
+            ),
+            holdout_filter_reference=str(
+                cfg.gatekeeper.adapters.holdout.filter
+            ),
+        )
 
     tensor_dataset = add_human_retraining_data(
         base_tensor_dataset
@@ -835,9 +924,15 @@ def train(cfg: DictConfig) -> None:
         model_path=model_output_path,
         model_name=model_registry_name,
         model_version=model_version,
-        dataset_version=str(cfg.dataset.version),
-        learning_rate=float(cfg.training.learning_rate),
-        validation_accuracy=float(validation_accuracy),
+        dataset_version=str(
+            cfg.dataset.version
+        ),
+        learning_rate=float(
+            cfg.training.learning_rate
+        ),
+        validation_accuracy=float(
+            validation_accuracy
+        ),
     )
 
     print(

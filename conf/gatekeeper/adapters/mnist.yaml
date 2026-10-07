@@ -1,9 +1,13 @@
 golden_set: sentinel.adapters.mnist:MNISTGoldenSetAdapter
 model: sentinel.adapters.torchscript_classifier:TorchScriptArgmaxModelAdapter
 
+holdout:
+  manifest_path: data/golden_set_manifest.json
+  id_field: source_index
+  filter: sentinel.adapters.mnist:exclude_training_holdout_rows
+
 builder:
   source_path: data/mnist.csv
-  manifest_path: data/golden_set_manifest.json
 
   rotation_angles:
     - -15

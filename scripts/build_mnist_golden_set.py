@@ -196,7 +196,7 @@ def build_golden_set(
 
     manifest_path = Path(
         str(
-            cfg.gatekeeper.adapters.builder.manifest_path
+            cfg.gatekeeper.adapters.holdout.manifest_path
         )
     )
 

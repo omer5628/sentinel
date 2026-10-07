@@ -27,4 +27,7 @@ RUN uv sync \
 COPY src/ ./src/
 COPY conf/ ./conf/
 
+COPY data/golden_set.csv ./data/golden_set.csv
+COPY data/golden_set_manifest.json ./data/golden_set_manifest.json
+
 ENTRYPOINT ["python", "-m", "sentinel.train"]

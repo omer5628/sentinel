@@ -8,7 +8,10 @@ __pycache__
 .pyright
 .mypy_cache
 
-data
+data/*
+!data/golden_set.csv
+!data/golden_set_manifest.json
+
 outputs
 artifacts/*
 !artifacts/model.pt
