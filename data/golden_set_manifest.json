@@ -1,0 +1,512 @@
+{
+  "source_dataset": {
+    "project": "Sentinel",
+    "name": "mnist",
+    "version": "1.0.0"
+  },
+  "random_seed": 42,
+  "validation_ratio": 0.2,
+  "required_samples": 100,
+  "samples": [
+    {
+      "source_index": 33253,
+      "label": 0,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 3410,
+      "label": 0,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 14693,
+      "label": 0,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 47555,
+      "label": 0,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 54608,
+      "label": 0,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 66643,
+      "label": 0,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 23679,
+      "label": 0,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 3882,
+      "label": 0,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 33023,
+      "label": 0,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 20334,
+      "label": 0,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 17129,
+      "label": 1,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 65738,
+      "label": 1,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 43429,
+      "label": 1,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 15255,
+      "label": 1,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 51949,
+      "label": 1,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 27509,
+      "label": 1,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 17090,
+      "label": 1,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 46181,
+      "label": 1,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 30649,
+      "label": 1,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 28246,
+      "label": 1,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 10100,
+      "label": 2,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 67400,
+      "label": 2,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 30705,
+      "label": 2,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 69971,
+      "label": 2,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 25618,
+      "label": 2,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 66431,
+      "label": 2,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 46997,
+      "label": 2,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 43760,
+      "label": 2,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 47685,
+      "label": 2,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 37671,
+      "label": 2,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 35407,
+      "label": 3,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 30229,
+      "label": 3,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 52972,
+      "label": 3,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 61291,
+      "label": 3,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 30673,
+      "label": 3,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 59104,
+      "label": 3,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 61856,
+      "label": 3,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 33760,
+      "label": 3,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 10349,
+      "label": 3,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 23024,
+      "label": 3,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 51817,
+      "label": 4,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 68255,
+      "label": 4,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 52448,
+      "label": 4,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 44620,
+      "label": 4,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 18190,
+      "label": 4,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 21792,
+      "label": 4,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 64268,
+      "label": 4,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 61511,
+      "label": 4,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 34683,
+      "label": 4,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 69550,
+      "label": 4,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 66981,
+      "label": 5,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 55661,
+      "label": 5,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 7235,
+      "label": 5,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 42517,
+      "label": 5,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 58381,
+      "label": 5,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 2549,
+      "label": 5,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 6853,
+      "label": 5,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 37820,
+      "label": 5,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 62970,
+      "label": 5,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 14204,
+      "label": 5,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 3392,
+      "label": 6,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 2533,
+      "label": 6,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 69953,
+      "label": 6,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 30755,
+      "label": 6,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 6789,
+      "label": 6,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 58863,
+      "label": 6,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 23354,
+      "label": 6,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 20013,
+      "label": 6,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 48609,
+      "label": 6,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 367,
+      "label": 6,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 40557,
+      "label": 7,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 22377,
+      "label": 7,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 66380,
+      "label": 7,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 15422,
+      "label": 7,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 42269,
+      "label": 7,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 64551,
+      "label": 7,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 11125,
+      "label": 7,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 13890,
+      "label": 7,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 46717,
+      "label": 7,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 898,
+      "label": 7,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 12282,
+      "label": 8,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 43788,
+      "label": 8,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 7550,
+      "label": 8,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 27236,
+      "label": 8,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 6896,
+      "label": 8,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 31034,
+      "label": 8,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 10881,
+      "label": 8,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 43848,
+      "label": 8,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 4691,
+      "label": 8,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 64671,
+      "label": 8,
+      "rotation_angle": 15.0
+    },
+    {
+      "source_index": 56443,
+      "label": 9,
+      "rotation_angle": -15.0
+    },
+    {
+      "source_index": 57657,
+      "label": 9,
+      "rotation_angle": -12.0
+    },
+    {
+      "source_index": 13269,
+      "label": 9,
+      "rotation_angle": -10.0
+    },
+    {
+      "source_index": 23278,
+      "label": 9,
+      "rotation_angle": -8.0
+    },
+    {
+      "source_index": 30453,
+      "label": 9,
+      "rotation_angle": -5.0
+    },
+    {
+      "source_index": 22050,
+      "label": 9,
+      "rotation_angle": 5.0
+    },
+    {
+      "source_index": 47125,
+      "label": 9,
+      "rotation_angle": 8.0
+    },
+    {
+      "source_index": 28330,
+      "label": 9,
+      "rotation_angle": 10.0
+    },
+    {
+      "source_index": 11225,
+      "label": 9,
+      "rotation_angle": 12.0
+    },
+    {
+      "source_index": 57590,
+      "label": 9,
+      "rotation_angle": 15.0
+    }
+  ]
+}
