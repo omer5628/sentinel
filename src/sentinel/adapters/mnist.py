@@ -9,6 +9,7 @@ from sentinel.features import preprocess_image
 from sentinel.gatekeeper.contracts import (
     GoldenSample,
 )
+from sentinel.retraining.holdout import HoldoutId
 
 
 IMAGE_WIDTH = 28
@@ -159,6 +160,66 @@ def _load_pixels(
 
     return pixel_matrix
 
+def exclude_training_holdout_rows(
+    dataframe: pd.DataFrame,
+    holdout_ids: frozenset[HoldoutId],
+) -> pd.DataFrame:
+    """Exclude immutable golden-set source rows from MNIST training data."""
+
+    if not holdout_ids:
+        return dataframe.copy()
+
+    source_indices: set[int] = set()
+
+    for holdout_id in holdout_ids:
+        if (
+            isinstance(holdout_id, bool)
+            or not isinstance(holdout_id, int)
+        ):
+            raise ValueError(
+                "MNIST holdout identifiers must be integer source indices."
+            )
+
+        source_indices.add(
+            holdout_id
+        )
+
+    available_indices = {
+        int(index)
+        for index in dataframe.index
+    }
+
+    missing_indices = (
+        source_indices
+        - available_indices
+    )
+
+    if missing_indices:
+        missing_preview = sorted(
+            missing_indices
+        )[:10]
+
+        raise ValueError(
+            "MNIST holdout source indices were not found "
+            "in the base dataset: "
+            f"{missing_preview}"
+        )
+
+    filtered_dataframe = dataframe.drop(
+        index=sorted(
+            source_indices
+        )
+    )
+
+    if len(filtered_dataframe) != (
+        len(dataframe)
+        - len(source_indices)
+    ):
+        raise RuntimeError(
+            "Unexpected MNIST holdout filtering result."
+        )
+
+    return filtered_dataframe.copy()
 
 class MNISTGoldenSetAdapter:
     """Load MNIST golden samples from a CSV file."""
