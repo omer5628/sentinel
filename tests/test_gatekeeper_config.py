@@ -28,6 +28,11 @@ def create_config():
                     "example.adapters:ModelAdapter"
                 ),
             },
+            "artifacts": {
+                "resolver": (
+                    "example.artifacts:ModelArtifactResolver"
+                ),
+            },
             "policy": {
                 "max_regression": 0.0,
                 "candidate_score_threshold": None,
@@ -57,6 +62,10 @@ def test_load_gatekeeper_config() -> None:
 
     assert result.model_adapter_reference == (
         "example.adapters:ModelAdapter"
+    )
+
+    assert result.model_artifact_resolver_reference == (
+        "example.artifacts:ModelArtifactResolver"
     )
 
     assert (
@@ -150,6 +159,20 @@ def test_rejects_empty_model_adapter() -> None:
     with pytest.raises(
         ValueError,
         match="Model adapter",
+    ):
+        load_gatekeeper_config(
+            cfg
+        )
+
+
+def test_rejects_empty_model_artifact_resolver() -> None:
+    cfg = create_config()
+
+    cfg.artifacts.resolver = ""
+
+    with pytest.raises(
+        ValueError,
+        match="Model-artifact resolver",
     ):
         load_gatekeeper_config(
             cfg

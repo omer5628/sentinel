@@ -1,0 +1,1 @@
+resolver: sentinel.adapters.clearml_model:ClearMLModelArtifactResolver

@@ -1,6 +1,7 @@
 defaults:
   - gatekeeper: default
   - gatekeeper/adapters: mnist
+  - gatekeeper/artifacts: clearml
   - _self_
 
 project:

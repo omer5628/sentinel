@@ -9,6 +9,7 @@ from sentinel.gatekeeper.contracts import (
 from sentinel.gatekeeper.plugins import (
     load_golden_set_adapter,
     load_model_adapter,
+    load_model_artifact_resolver,
     load_plugin_object,
 )
 
@@ -43,6 +44,16 @@ class FakeModelAdapter:
         features: Any,
     ) -> str:
         return "prediction"
+
+
+class FakeModelArtifactResolver:
+    """Provide a valid model-artifact resolver for plugin tests."""
+
+    def resolve(
+        self,
+        model_reference: str,
+    ) -> str:
+        return f"/tmp/{model_reference}.pt"
 
 
 class InvalidAdapter:
@@ -125,6 +136,25 @@ def test_load_model_adapter(
     assert prediction == "prediction"
 
 
+def test_load_model_artifact_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sentinel.gatekeeper.plugins.load_plugin_object",
+        lambda reference: FakeModelArtifactResolver,
+    )
+
+    resolver = load_model_artifact_resolver(
+        "fake.module:FakeModelArtifactResolver"
+    )
+
+    resolved = resolver.resolve(
+        "candidate"
+    )
+
+    assert resolved == "/tmp/candidate.pt"
+
+
 def test_rejects_invalid_golden_set_adapter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -155,5 +185,22 @@ def test_rejects_invalid_model_adapter(
         match="ModelAdapter",
     ):
         load_model_adapter(
+            "fake.module:InvalidAdapter"
+        )
+
+
+def test_rejects_invalid_model_artifact_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sentinel.gatekeeper.plugins.load_plugin_object",
+        lambda reference: InvalidAdapter,
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="ModelArtifactResolver",
+    ):
+        load_model_artifact_resolver(
             "fake.module:InvalidAdapter"
         )

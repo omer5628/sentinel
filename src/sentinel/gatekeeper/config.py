@@ -16,6 +16,7 @@ SUPPORTED_METRIC_DIRECTIONS = {
     "minimize",
 }
 
+
 SUPPORTED_THRESHOLD_OPERATORS = {
     "gte",
     "lte",
@@ -32,6 +33,7 @@ class GatekeeperConfig:
     metric_name: str
     golden_set_adapter_reference: str
     model_adapter_reference: str
+    model_artifact_resolver_reference: str
     policy: GatePolicy
 
 
@@ -118,6 +120,13 @@ def load_gatekeeper_config(
         )
     )
 
+    model_artifact_resolver_reference = (
+        _read_plugin_reference(
+            cfg.artifacts.resolver,
+            "Model-artifact resolver",
+        )
+    )
+
     max_regression = float(
         cfg.policy.max_regression
     )
@@ -166,6 +175,9 @@ def load_gatekeeper_config(
         ),
         model_adapter_reference=(
             model_adapter_reference
+        ),
+        model_artifact_resolver_reference=(
+            model_artifact_resolver_reference
         ),
         policy=policy,
     )

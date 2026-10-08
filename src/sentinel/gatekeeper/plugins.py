@@ -1,6 +1,9 @@
 from importlib import import_module
 from typing import Any, cast
 
+from sentinel.gatekeeper.artifacts import (
+    ModelArtifactResolver,
+)
 from sentinel.gatekeeper.contracts import (
     GoldenSetAdapter,
     ModelAdapter,
@@ -114,4 +117,35 @@ def load_model_adapter(
     return cast(
         ModelAdapter,
         adapter,
+    )
+
+
+def load_model_artifact_resolver(
+    reference: str,
+) -> ModelArtifactResolver:
+    """Load and instantiate a model-artifact resolver plugin."""
+
+    resolver_type = load_plugin_object(
+        reference
+    )
+
+    if not callable(resolver_type):
+        raise TypeError(
+            "Model-artifact resolver plugin must be callable."
+        )
+
+    resolver = resolver_type()
+
+    if not isinstance(
+        resolver,
+        ModelArtifactResolver,
+    ):
+        raise TypeError(
+            "Loaded plugin does not implement "
+            "the ModelArtifactResolver contract."
+        )
+
+    return cast(
+        ModelArtifactResolver,
+        resolver,
     )
