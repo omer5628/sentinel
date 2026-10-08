@@ -884,6 +884,256 @@ PY
             }
         }
 
+        stage('Render Gatekeeper Job') {
+            steps {
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        test -s .current-model-id
+                        test -s .candidate-model-id
+                        test -s .retraining-worker-tag
+
+                        CURRENT_MODEL_ID="$(
+                            cat .current-model-id
+                        )"
+
+                        CANDIDATE_MODEL_ID="$(
+                            cat .candidate-model-id
+                        )"
+
+                        WORKER_TAG="$(
+                            cat .retraining-worker-tag
+                        )"
+
+                        if [ "$CURRENT_MODEL_ID" = "$CANDIDATE_MODEL_ID" ]; then
+                            echo "Current and candidate model IDs are identical."
+                            exit 1
+                        fi
+
+                        case "$WORKER_TAG" in
+                            ''|*[!0-9]*)
+                                echo "Invalid Gatekeeper image tag: $WORKER_TAG"
+                                exit 1
+                                ;;
+                        esac
+
+                        helm template sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.validation.enabled=false \
+                          --set retraining.gatekeeper.enabled=true \
+                          --set-string retraining.runId="${BUILD_NUMBER}" \
+                          --set-string retraining.gatekeeper.currentModelReference="${CURRENT_MODEL_ID}" \
+                          --set-string retraining.gatekeeper.candidateModelReference="${CANDIDATE_MODEL_ID}" \
+                          --set-string retraining.gatekeeper.image.tag="${WORKER_TAG}" \
+                          --show-only templates/retraining-gatekeeper-job.yaml \
+                          > retraining-gatekeeper-job.yaml
+
+                        test -s retraining-gatekeeper-job.yaml
+
+                        grep -F \
+                          "sentinel-retraining-gatekeeper-${BUILD_NUMBER}" \
+                          retraining-gatekeeper-job.yaml \
+                          > /dev/null
+
+                        grep -F \
+                          "sentinel.gatekeeper.compare" \
+                          retraining-gatekeeper-job.yaml \
+                          > /dev/null
+
+                        grep -F \
+                          "\"${CURRENT_MODEL_ID}\"" \
+                          retraining-gatekeeper-job.yaml \
+                          > /dev/null
+
+                        grep -F \
+                          "\"${CANDIDATE_MODEL_ID}\"" \
+                          retraining-gatekeeper-job.yaml \
+                          > /dev/null
+
+                        GATEKEEPER_IMAGE="$(
+                            sed -n \
+                              's/^[[:space:]]*image: "\(.*\)"$/\1/p' \
+                              retraining-gatekeeper-job.yaml \
+                            | head -n 1
+                        )"
+
+                        if [ -z "$GATEKEEPER_IMAGE" ]; then
+                            echo "Unable to resolve rendered Gatekeeper image."
+                            exit 1
+                        fi
+
+                        case "$GATEKEEPER_IMAGE" in
+                            *:"${WORKER_TAG}")
+                                ;;
+                            *)
+                                echo "Gatekeeper image tag does not match the immutable worker tag."
+                                echo "Rendered Gatekeeper image: $GATEKEEPER_IMAGE"
+                                echo "Expected immutable tag: $WORKER_TAG"
+                                exit 1
+                                ;;
+                        esac
+
+                        echo "Using Gatekeeper image: $GATEKEEPER_IMAGE"
+                        echo "Gatekeeper Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Run Gatekeeper') {
+            steps {
+                script {
+                    def gatekeeperStatus
+
+                    container('kubectl') {
+                        gatekeeperStatus = sh(
+                            script: '''
+                                set -u
+
+                                JOB_NAME="sentinel-retraining-gatekeeper-${BUILD_NUMBER}"
+                                JOB_RESULT=""
+
+                                if ! kubectl create \
+                                  --namespace sentinel-dev \
+                                  -f retraining-gatekeeper-job.yaml
+                                then
+                                    echo "Failed to create Gatekeeper Job."
+                                    exit 1
+                                fi
+
+                                for _ in $(seq 1 120)
+                                do
+                                    SUCCEEDED="$(
+                                        kubectl get job \
+                                          "$JOB_NAME" \
+                                          --namespace sentinel-dev \
+                                          -o jsonpath='{.status.succeeded}' \
+                                          2>/dev/null \
+                                          || true
+                                    )"
+
+                                    FAILED="$(
+                                        kubectl get job \
+                                          "$JOB_NAME" \
+                                          --namespace sentinel-dev \
+                                          -o jsonpath='{.status.failed}' \
+                                          2>/dev/null \
+                                          || true
+                                    )"
+
+                                    if [ "$SUCCEEDED" = "1" ]; then
+                                        JOB_RESULT="passed"
+                                        break
+                                    fi
+
+                                    case "$FAILED" in
+                                        ''|0)
+                                            ;;
+                                        *)
+                                            JOB_RESULT="failed"
+                                            break
+                                            ;;
+                                    esac
+
+                                    sleep 5
+                                done
+
+                                kubectl logs \
+                                  --namespace sentinel-dev \
+                                  "job/${JOB_NAME}" \
+                                  --all-containers=true \
+                                  > retraining-gatekeeper.log \
+                                  2>&1 \
+                                  || true
+
+                                cat retraining-gatekeeper.log || true
+
+                                if [ "$JOB_RESULT" != "passed" ]; then
+                                    echo "Gatekeeper Job did not pass."
+
+                                    kubectl describe \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      || true
+
+                                    exit 1
+                                fi
+
+                                GATEKEEPER_STATUS="$(
+                                    sed -n \
+                                      's/^gatekeeper_status=//p' \
+                                      retraining-gatekeeper.log \
+                                    | tail -n 1
+                                )"
+
+                                if [ "$GATEKEEPER_STATUS" != "passed" ]; then
+                                    echo "Invalid Gatekeeper result: $GATEKEEPER_STATUS"
+                                    exit 1
+                                fi
+
+                                EXPECTED_CURRENT_MODEL_ID="$(
+                                    cat .current-model-id
+                                )"
+
+                                EXPECTED_CANDIDATE_MODEL_ID="$(
+                                    cat .candidate-model-id
+                                )"
+
+                                ACTUAL_CURRENT_MODEL_ID="$(
+                                    sed -n \
+                                      's/^current_model_reference=//p' \
+                                      retraining-gatekeeper.log \
+                                    | tail -n 1
+                                )"
+
+                                ACTUAL_CANDIDATE_MODEL_ID="$(
+                                    sed -n \
+                                      's/^candidate_model_reference=//p' \
+                                      retraining-gatekeeper.log \
+                                    | tail -n 1
+                                )"
+
+                                if [ "$ACTUAL_CURRENT_MODEL_ID" != "$EXPECTED_CURRENT_MODEL_ID" ]; then
+                                    echo "Gatekeeper evaluated the wrong current model."
+                                    exit 1
+                                fi
+
+                                if [ "$ACTUAL_CANDIDATE_MODEL_ID" != "$EXPECTED_CANDIDATE_MODEL_ID" ]; then
+                                    echo "Gatekeeper evaluated the wrong candidate model."
+                                    exit 1
+                                fi
+
+                                echo "Gatekeeper passed successfully."
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+
+                    archiveArtifacts(
+                        artifacts: 'retraining-gatekeeper.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+
+                    if (gatekeeperStatus != 0) {
+                        error(
+                            'Gatekeeper rejected the candidate model ' +
+                            'or the evaluation failed.'
+                        )
+                    }
+
+                    echo(
+                        'Gatekeeper passed. ' +
+                        'The retraining checkpoint may now advance.'
+                    )
+                }
+            }
+        }
+
         stage('Render Checkpoint Job') {
             steps {
                 container('kubectl') {
@@ -1110,6 +1360,13 @@ PY
                       || true
 
                     kubectl delete job \
+                      "sentinel-retraining-gatekeeper-${BUILD_NUMBER}" \
+                      --namespace sentinel-dev \
+                      --ignore-not-found=true \
+                      --wait=false \
+                      || true
+
+                    kubectl delete job \
                       "sentinel-retraining-checkpoint-${BUILD_NUMBER}" \
                       --namespace sentinel-dev \
                       --ignore-not-found=true \
@@ -1125,8 +1382,12 @@ PY
                 rm -f retraining-validation.log
                 rm -f retraining-train-job.yaml
                 rm -f retraining-train.log
+                rm -f retraining-gatekeeper-job.yaml
+                rm -f retraining-gatekeeper.log
                 rm -f retraining-checkpoint-job.yaml
                 rm -f retraining-checkpoint.log
+                rm -f .current-model-id
+                rm -f .candidate-model-id
                 rm -f .retraining-worker-repository
                 rm -f .retraining-worker-tag
                 rm -f .retraining-gate-status
