@@ -1,5 +1,8 @@
 # Production overrides for Project Sentinel.
 
+model:
+  productionReference: "957c15c4b33848b4841141074c66bdb8"
+
 api:
   replicaCount: 3
 
