@@ -956,7 +956,7 @@ PY
 
                         GATEKEEPER_IMAGE="$(
                             sed -n \
-                              's/^[[:space:]]*image: "\(.*\)"$/\1/p' \
+                              's/^[[:space:]]*image: "\\(.*\\)"$/\\1/p' \
                               retraining-gatekeeper-job.yaml \
                             | head -n 1
                         )"
