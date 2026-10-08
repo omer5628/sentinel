@@ -350,6 +350,25 @@ retraining:
       tag: ""
       pullPolicy: Always
 
+  gatekeeper:
+    enabled: false
+
+    currentModelReference: ""
+    candidateModelReference: ""
+
+    image:
+      repository: omer5628/sentinel-train
+      tag: ""
+      pullPolicy: Always
+
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+
   clearml:
     apiHost: ""
     filesHost: ""
