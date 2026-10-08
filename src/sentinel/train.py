@@ -956,6 +956,10 @@ def train(cfg: DictConfig) -> None:
     )
 
     print(
+        f"candidate_model_id={output_model.id}"
+    )
+
+    print(
         "Model uploaded successfully "
         "to the ClearML model registry."
     )

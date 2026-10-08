@@ -726,9 +726,59 @@ spec:
 
                     echo(
                         'Retraining completed successfully. ' +
-                        'Checkpoint update will run next.'
+                        'Candidate model resolution will run next.'
                     )
                 }
+            }
+        }
+
+        stage('Resolve Candidate Model') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+
+                        test -s retraining-train.log
+
+                        CANDIDATE_MODEL_ID="$(
+                            sed -n \
+                                's/^candidate_model_id=//p' \
+                                retraining-train.log \
+                            | tail -n 1
+                        )"
+
+                        if [ -z "$CANDIDATE_MODEL_ID" ]; then
+                            echo "Candidate ClearML model ID was not found."
+                            exit 1
+                        fi
+
+                        case "$CANDIDATE_MODEL_ID" in
+                            *[!0-9a-fA-F]*)
+                                echo "Candidate model ID has an invalid format."
+                                echo "Value: $CANDIDATE_MODEL_ID"
+                                exit 1
+                                ;;
+                        esac
+
+                        if [ "${#CANDIDATE_MODEL_ID}" -ne 32 ]; then
+                            echo "Candidate model ID must contain 32 characters."
+                            echo "Value: $CANDIDATE_MODEL_ID"
+                            exit 1
+                        fi
+
+                        printf '%s\\n' \
+                            "$CANDIDATE_MODEL_ID" \
+                            > .candidate-model-id
+
+                        echo "Candidate ClearML model ID resolved successfully."
+                        echo "Candidate model ID: $CANDIDATE_MODEL_ID"
+                    '''
+                }
+
+                archiveArtifacts(
+                    artifacts: '.candidate-model-id',
+                    fingerprint: true
+                )
             }
         }
 
