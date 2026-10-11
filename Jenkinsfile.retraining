@@ -712,6 +712,7 @@ PY
                           --namespace sentinel-dev \
                           -f charts/sentinel/values-dev.yaml \
                           --set retraining.enabled=true \
+                          --set retraining.validation.enabled=false \
                           --set retraining.train.enabled=true \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
                           --set-string retraining.cutoff="${RETRAINING_CUTOFF}" \
