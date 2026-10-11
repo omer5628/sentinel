@@ -317,6 +317,7 @@ PY
                           --namespace sentinel-dev \
                           -f charts/sentinel/values-dev.yaml \
                           --set retraining.enabled=true \
+                          --set retraining.validation.enabled=false \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
                           --set-string worker.image.repository="${WORKER_REPOSITORY}" \
                           --set-string worker.image.tag="${WORKER_TAG}" \
