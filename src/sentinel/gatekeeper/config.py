@@ -131,6 +131,13 @@ def load_gatekeeper_config(
         cfg.policy.max_regression
     )
 
+    require_improvement = bool(
+        cfg.policy.get(
+            "require_improvement",
+            False,
+        )
+    )
+
     raw_operator = str(
         cfg.policy.threshold_operator
     ).strip()
@@ -159,6 +166,7 @@ def load_gatekeeper_config(
     policy = GatePolicy(
         metric_direction=metric_direction,
         max_regression=max_regression,
+        require_improvement=require_improvement,
         candidate_score_threshold=(
             candidate_score_threshold
         ),

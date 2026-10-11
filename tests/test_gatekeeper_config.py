@@ -35,6 +35,7 @@ def create_config():
             },
             "policy": {
                 "max_regression": 0.0,
+                "require_improvement": True,
                 "candidate_score_threshold": None,
                 "threshold_operator": "gte",
             },
@@ -50,9 +51,11 @@ def test_load_gatekeeper_config() -> None:
     )
 
     assert result.enabled is True
+
     assert str(result.golden_set_path) == (
         "data/golden_set.csv"
     )
+
     assert result.required_samples == 100
     assert result.metric_name == "accuracy"
 
@@ -74,11 +77,24 @@ def test_load_gatekeeper_config() -> None:
     )
 
     assert result.policy.max_regression == 0.0
+    assert result.policy.require_improvement is True
 
     assert (
         result.policy.candidate_score_threshold
         is None
     )
+
+
+def test_missing_require_improvement_defaults_to_false() -> None:
+    cfg = create_config()
+
+    del cfg.policy.require_improvement
+
+    result = load_gatekeeper_config(
+        cfg
+    )
+
+    assert result.policy.require_improvement is False
 
 
 def test_rejects_invalid_required_samples() -> None:

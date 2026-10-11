@@ -23,6 +23,7 @@ class GatePolicy:
 
     metric_direction: MetricDirection
     max_regression: float = 0.0
+    require_improvement: bool = False
     candidate_score_threshold: float | None = None
     threshold_operator: ThresholdOperator = "gte"
 
@@ -92,6 +93,18 @@ def evaluate_gate(
         comparison=comparison,
         metric_direction=policy.metric_direction,
     )
+
+    if (
+        policy.require_improvement
+        and regression >= 0
+    ):
+        return GateDecision(
+            passed=False,
+            regression=regression,
+            reason=(
+                "Candidate must strictly improve over the current model."
+            ),
+        )
 
     if regression > policy.max_regression:
         return GateDecision(

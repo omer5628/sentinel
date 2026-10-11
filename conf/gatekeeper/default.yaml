@@ -10,5 +10,6 @@ evaluation:
 
 policy:
   max_regression: 0.0
+  require_improvement: true
   candidate_score_threshold: null
   threshold_operator: gte

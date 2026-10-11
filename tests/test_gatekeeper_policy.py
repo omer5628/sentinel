@@ -121,6 +121,62 @@ def test_minimize_policy_rejects_higher_candidate_score() -> None:
     assert decision.passed is False
 
 
+def test_strict_improvement_rejects_equal_maximize_score() -> None:
+    comparison = create_comparison(
+        current_score=0.90,
+        candidate_score=0.90,
+    )
+
+    decision = evaluate_gate(
+        comparison=comparison,
+        policy=GatePolicy(
+            metric_direction="maximize",
+            require_improvement=True,
+        ),
+    )
+
+    assert decision.passed is False
+    assert decision.regression == pytest.approx(0.0)
+    assert "strictly improve" in decision.reason
+
+
+def test_strict_improvement_rejects_equal_minimize_score() -> None:
+    comparison = create_comparison(
+        current_score=0.20,
+        candidate_score=0.20,
+    )
+
+    decision = evaluate_gate(
+        comparison=comparison,
+        policy=GatePolicy(
+            metric_direction="minimize",
+            require_improvement=True,
+        ),
+    )
+
+    assert decision.passed is False
+    assert decision.regression == pytest.approx(0.0)
+    assert "strictly improve" in decision.reason
+
+
+def test_equal_score_is_allowed_when_improvement_not_required() -> None:
+    comparison = create_comparison(
+        current_score=0.90,
+        candidate_score=0.90,
+    )
+
+    decision = evaluate_gate(
+        comparison=comparison,
+        policy=GatePolicy(
+            metric_direction="maximize",
+            require_improvement=False,
+        ),
+    )
+
+    assert decision.passed is True
+    assert decision.regression == pytest.approx(0.0)
+
+
 def test_policy_rejects_negative_regression_limit() -> None:
     comparison = create_comparison(
         current_score=0.90,

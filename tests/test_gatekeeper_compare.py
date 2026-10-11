@@ -86,6 +86,25 @@ class RegressingModelAdapter:
         )
 
 
+class EqualModelAdapter:
+    """Return identical predictions for both models."""
+
+    def load(
+        self,
+        model_reference: str,
+    ) -> str:
+        return model_reference
+
+    def predict(
+        self,
+        model: Any,
+        features: Any,
+    ) -> int:
+        return int(
+            features
+        )
+
+
 def create_config():
     """Create a valid gatekeeper configuration."""
 
@@ -115,6 +134,7 @@ def create_config():
             },
             "policy": {
                 "max_regression": 0.0,
+                "require_improvement": True,
                 "candidate_score_threshold": None,
                 "threshold_operator": "gte",
             },
@@ -185,6 +205,27 @@ def test_gatekeeper_rejects_regressing_candidate(
     assert result.comparison.current.score == 1.0
     assert result.comparison.candidate.score == 0.5
     assert result.comparison.score_delta == -0.5
+
+
+def test_gatekeeper_rejects_equal_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_plugins(
+        monkeypatch,
+        EqualModelAdapter(),
+    )
+
+    result = compare.run_gatekeeper(
+        cfg=create_config(),
+        current_model_reference="current",
+        candidate_model_reference="candidate",
+    )
+
+    assert result.decision.passed is False
+    assert result.comparison.current.score == 1.0
+    assert result.comparison.candidate.score == 1.0
+    assert result.comparison.score_delta == 0.0
+    assert "strictly improve" in result.decision.reason
 
 
 def test_gatekeeper_rejects_same_model_reference(
