@@ -2,6 +2,7 @@
 
 model:
   productionReference: "957c15c4b33848b4841141074c66bdb8"
+  canaryReference: "2720775c2b0140a0933d5e82c300e6e2"
 
 api:
   replicaCount: 3

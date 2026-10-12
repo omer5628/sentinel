@@ -1,3 +1,4 @@
+
 import base64
 import binascii
 from io import BytesIO
@@ -152,10 +153,10 @@ class InferenceEventV1(BaseModel):
         gt=0,
     )
 
-    model_version: Literal[
-        "v1",
-        "v2",
-    ]
+    model_version: str = Field(
+        min_length=1,
+        max_length=128,
+    )
 
     predicted_class: int = Field(
         ge=0,

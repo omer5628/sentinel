@@ -1,3 +1,4 @@
+
 from uuid import UUID
 
 import pytest
@@ -13,10 +14,10 @@ INFERENCE_ID = UUID(
     "12345678-1234-5678-1234-567812345678"
 )
 
-
 REQUEST_ID = UUID(
     "87654321-4321-8765-4321-876543218765"
 )
+
 
 def valid_inference_event() -> dict[str, object]:
     """Return a valid inference event payload."""
@@ -37,9 +38,12 @@ def valid_inference_event() -> dict[str, object]:
     [
         "v1",
         "v2",
+        "v3",
+        "v10",
+        "model-2026-10-12",
     ],
 )
-def test_inference_event_accepts_supported_models(
+def test_inference_event_accepts_model_versions(
     model_version: str,
 ) -> None:
     payload = valid_inference_event()
@@ -50,6 +54,28 @@ def test_inference_event_accepts_supported_models(
     )
 
     assert event.model_version == model_version
+    assert event.schema_version == "v1"
+
+
+@pytest.mark.parametrize(
+    "model_version",
+    [
+        "",
+        "x" * 129,
+        None,
+        123,
+    ],
+)
+def test_inference_event_rejects_invalid_model_version(
+    model_version: object,
+) -> None:
+    payload = valid_inference_event()
+    payload["model_version"] = model_version
+
+    with pytest.raises(ValidationError):
+        InferenceEventV1.model_validate(
+            payload
+        )
 
 
 @pytest.mark.parametrize(
@@ -93,16 +119,6 @@ def test_inference_event_rejects_invalid_confidence(
 def test_inference_event_rejects_invalid_schema_version() -> None:
     payload = valid_inference_event()
     payload["schema_version"] = "v2"
-
-    with pytest.raises(ValidationError):
-        InferenceEventV1.model_validate(
-            payload
-        )
-
-
-def test_inference_event_rejects_invalid_model_version() -> None:
-    payload = valid_inference_event()
-    payload["model_version"] = "v3"
 
     with pytest.raises(ValidationError):
         InferenceEventV1.model_validate(

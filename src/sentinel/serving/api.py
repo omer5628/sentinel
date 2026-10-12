@@ -4,7 +4,7 @@ import os
 import sys
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Literal
+from typing import AsyncIterator
 from uuid import UUID, uuid4
 
 import httpx
@@ -153,10 +153,10 @@ class ClearMLPrediction(BaseModel):
         le=1.0,
     )
 
-    model_version: Literal[
-        "v1",
-        "v2",
-    ]
+    model_version: str = Field(
+        min_length=1,
+        max_length=128,
+    )
 
 
 class PredictionResponse(BaseModel):
@@ -176,10 +176,10 @@ class PredictionResponse(BaseModel):
         le=1.0,
     )
 
-    model_version: Literal[
-        "v1",
-        "v2",
-    ]
+    model_version: str = Field(
+        min_length=1,
+        max_length=128,
+    )
 
 
 class ApplicationState:
@@ -306,10 +306,7 @@ def run_canary_inference(
 
 def publish_inference_event(
     image_id: str,
-    model_version: Literal[
-        "v1",
-        "v2",
-    ],
+    model_version: str,
     predicted_class: int,
     confidence: float,
     inference_id: UUID | None = None,
