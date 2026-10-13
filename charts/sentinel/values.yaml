@@ -342,6 +342,28 @@ retraining:
   checkpoint:
     enabled: false
 
+  canaryPromotion:
+    enabled: false
+    servingTaskId: ""
+    candidateModelReference: ""
+    servingConfig: "conf/serving/mnist.yaml"
+    inferenceBaseUrl: "http://clearml-serving-inference.default.svc.cluster.local:8080"
+    smokeTestAttempts: 12
+    smokeTestRetrySeconds: 5
+
+    image:
+      repository: omer5628/sentinel-train
+      tag: ""
+      pullPolicy: Always
+
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+
   train:
     enabled: false
 

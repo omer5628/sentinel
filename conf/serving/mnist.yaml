@@ -1,0 +1,31 @@
+# Model-specific ClearML Serving contract for MNIST.
+provider: clearml
+engine: triton
+
+endpoints:
+  base: sentinel-mnist
+  canary: sentinel-mnist-canary
+
+preprocess:
+  template: serving/preprocess/mnist.py
+
+input:
+  name: INPUT__0
+  type: float32
+  size: [1, 28, 28]
+
+output:
+  name: OUTPUT__0
+  type: float32
+  size: [10]
+
+triton:
+  max_batch_size: 8
+  dynamic_batching:
+    max_queue_delay_microseconds: 5000
+
+# Synthetic payload for direct-endpoint verification before switching Canary.
+smokeTest:
+  requestField: pixels
+  sampleShape: [28, 28]
+  sampleValue: 0.0

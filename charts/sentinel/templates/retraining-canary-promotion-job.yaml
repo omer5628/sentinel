@@ -1,0 +1,160 @@
+{{- if and .Values.retraining.enabled .Values.retraining.canaryPromotion.enabled }}
+
+{{- $runId := required
+    "retraining.runId is required for Canary promotion"
+    .Values.retraining.runId
+-}}
+{{- if not (regexMatch "^[1-9][0-9]*$" (toString $runId)) }}
+{{- fail "retraining.runId must be a positive integer for Canary promotion" }}
+{{- end }}
+
+{{- $promotion := .Values.retraining.canaryPromotion -}}
+{{- $servingTaskId := required
+    "retraining.canaryPromotion.servingTaskId is required"
+    $promotion.servingTaskId
+-}}
+{{- $candidate := required
+    "retraining.canaryPromotion.candidateModelReference is required"
+    $promotion.candidateModelReference
+-}}
+{{- $production := required
+    "model.productionReference is required for Canary promotion"
+    .Values.model.productionReference
+-}}
+{{- $imageTag := required
+    "retraining.canaryPromotion.image.tag is required"
+    $promotion.image.tag
+-}}
+{{- $servingConfig := required
+    "retraining.canaryPromotion.servingConfig is required"
+    $promotion.servingConfig
+-}}
+{{- $inferenceBaseUrl := required
+    "retraining.canaryPromotion.inferenceBaseUrl is required"
+    $promotion.inferenceBaseUrl
+-}}
+{{- $smokeTestAttempts := int $promotion.smokeTestAttempts -}}
+{{- if lt $smokeTestAttempts 1 }}
+{{- fail "retraining.canaryPromotion.smokeTestAttempts must be positive" }}
+{{- end }}
+{{- $smokeTestRetrySeconds := float64 $promotion.smokeTestRetrySeconds -}}
+{{- if lt $smokeTestRetrySeconds 0.0 }}
+{{- fail "retraining.canaryPromotion.smokeTestRetrySeconds cannot be negative" }}
+{{- end }}
+
+{{- $apiHost := required
+    "retraining.clearml.apiHost is required for Canary promotion"
+    .Values.retraining.clearml.apiHost
+-}}
+{{- $filesHost := required
+    "retraining.clearml.filesHost is required for Canary promotion"
+    .Values.retraining.clearml.filesHost
+-}}
+{{- $webHost := required
+    "retraining.clearml.webHost is required for Canary promotion"
+    .Values.retraining.clearml.webHost
+-}}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "sentinel-retraining-canary-promotion-{{ $runId }}"
+  labels:
+    app.kubernetes.io/name: sentinel-retraining-canary-promotion
+    app.kubernetes.io/component: retraining
+    app.kubernetes.io/part-of: sentinel
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel-retraining-canary-promotion
+        app.kubernetes.io/component: retraining
+        app.kubernetes.io/part-of: sentinel
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- if .Values.registry.existingPullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.registry.existingPullSecret | quote }}
+      {{- end }}
+      containers:
+        - name: canary-promotion
+          image: "{{ $promotion.image.repository }}:{{ $imageTag }}"
+          imagePullPolicy: {{ $promotion.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              set -eu
+
+              python scripts/register_serving_candidate.py \
+                --config "$SERVING_CONFIG" \
+                --serving-task-id "$SERVING_TASK_ID" \
+                --candidate-model-id "$CANDIDATE_MODEL_ID" \
+                --model-version "$MODEL_VERSION" \
+                --serving-version "$SERVING_VERSION" \
+                --execute
+
+              # Do not route traffic until the new version answers inference.
+              python scripts/verify_serving_inference.py \
+                --config "$SERVING_CONFIG" \
+                --inference-base-url "$INFERENCE_BASE_URL" \
+                --serving-version "$SERVING_VERSION" \
+                --model-version "$MODEL_VERSION" \
+                --attempts "$SMOKE_TEST_ATTEMPTS" \
+                --retry-seconds "$SMOKE_TEST_RETRY_SECONDS"
+
+              python scripts/promote_serving_canary.py \
+                --config "$SERVING_CONFIG" \
+                --serving-task-id "$SERVING_TASK_ID" \
+                --production-model-id "$PRODUCTION_MODEL_ID" \
+                --candidate-model-id "$CANDIDATE_MODEL_ID" \
+                --serving-version "$SERVING_VERSION" \
+                --execute
+
+              echo "canary_promotion_status=routing_verified"
+          env:
+            - name: SERVING_CONFIG
+              value: {{ $servingConfig | quote }}
+            - name: INFERENCE_BASE_URL
+              value: {{ $inferenceBaseUrl | quote }}
+            - name: SMOKE_TEST_ATTEMPTS
+              value: {{ $smokeTestAttempts | quote }}
+            - name: SMOKE_TEST_RETRY_SECONDS
+              value: {{ $smokeTestRetrySeconds | quote }}
+            - name: SERVING_TASK_ID
+              value: {{ $servingTaskId | quote }}
+            - name: PRODUCTION_MODEL_ID
+              value: {{ $production | quote }}
+            - name: CANDIDATE_MODEL_ID
+              value: {{ $candidate | quote }}
+            - name: MODEL_VERSION
+              value: {{ printf "retrain-%s" (toString $runId) | quote }}
+            - name: SERVING_VERSION
+              value: {{ toString $runId | quote }}
+            - name: CLEARML_API_HOST
+              value: {{ $apiHost | quote }}
+            - name: CLEARML_FILES_HOST
+              value: {{ $filesHost | quote }}
+            - name: CLEARML_WEB_HOST
+              value: {{ $webHost | quote }}
+            - name: CLEARML_API_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.retraining.clearml.existingSecret | quote }}
+                  key: CLEARML_API_ACCESS_KEY
+            - name: CLEARML_API_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.retraining.clearml.existingSecret | quote }}
+                  key: CLEARML_API_SECRET_KEY
+          resources:
+            requests:
+              cpu: {{ $promotion.resources.requests.cpu | quote }}
+              memory: {{ $promotion.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ $promotion.resources.limits.cpu | quote }}
+              memory: {{ $promotion.resources.limits.memory | quote }}
+{{- end }}

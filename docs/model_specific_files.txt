@@ -1,0 +1,77 @@
+# Sentinel — Model/Dataset-Specific File Inventory
+# File location in repository: docs/model_specific_files.txt
+# Started: Phase 6.5B (2026-10-13)
+# Purpose: list files to review/replace when adapting Sentinel to a different model/dataset.
+# Maintain this inventory whenever a new model-specific file is created or discovered.
+# This is a migration checklist, NOT a list of files that should all be refactored now.
+# Status key: CONFIRMED = path identified in project outputs, REVIEW = inspect content/path before relying on it.
+
+[PHASE 6.4 — Gatekeeper]
+CONFIRMED | data/golden_set.csv
+  Golden-set examples; replace with a versioned, representative holdout set for the new dataset.
+CONFIRMED | data/golden_set_manifest.json
+  Golden-set manifest; regenerate/validate alongside the new golden set.
+CONFIRMED | tests/test_mnist_gatekeeper_adapter.py
+  MNIST adapter tests; provide equivalent tests for a replacement evaluation adapter.
+CONFIRMED | tests/test_mnist_holdout_filter.py
+  MNIST holdout behavior tests; adapt to the replacement dataset and sample identifiers.
+REVIEW    | conf/gatekeeper/adapters/mnist.yaml
+  Selected by conf/config.yaml (gatekeeper/adapters: mnist); verify exact filename and adapter settings.
+REVIEW    | MNIST-specific Gatekeeper evaluation adapter implementation (exact path not yet provided)
+  Locate via src/sentinel/gatekeeper/ and src/sentinel/adapters/; keep the shared Gatekeeper policy generic.
+
+[PHASE 6.5 — Serving / Canary Promotion]
+CONFIRMED | conf/serving/mnist.yaml
+  MNIST endpoints, tensor I/O, Triton settings and read-only smoke-test sample (28x28 zeros).
+CONFIRMED | charts/sentinel/values-prod.yaml
+  Environment-specific productionReference and canaryReference; set to new ClearML model IDs.
+CONFIRMED | charts/sentinel/values.yaml
+  Currently contains MNIST Canary URL and MNIST-specific drift-diagnostics tensor/model defaults.
+CONFIRMED | src/sentinel/serving/api.py
+  Still has MNIST shape (1,1,28,28), digit labels 0..9, prediction range 0..9 and MNIST Canary default URL. model_version has already been generalized.
+CONFIRMED | src/sentinel/schema/v1.py
+  Image contract still requires 28x28 grayscale PNG and inference class range 0..9; model_version has already been generalized.
+CONFIRMED | src/sentinel/train.py
+  Contains MNIST-specific model metadata/tags, label enumeration and training implementation; separate into model/dataset adapter when refactoring.
+CONFIRMED | conf/config.yaml
+  Currently selects the MNIST dataset, CNN registry name and model/training-specific parameters.
+CONFIRMED | conf/model/cnn_v1.yaml
+  CNN architecture configuration: channels, class count and hidden dimensions.
+CONFIRMED | tests/test_schema.py
+  Tests of the current MNIST-oriented image/inference contract; adapt/add coverage for replacement data contracts.
+
+[OTHER KNOWN MODEL/DATASET-SPECIFIC FILES — REVIEW AFTER PHASE 6]
+CONFIRMED | src/sentinel/producers/camera_feed.py
+  Currently loads/sends MNIST inputs; replace or configure the producer for a different data source.
+CONFIRMED | src/sentinel/upload_data.py
+  Currently uploads the MNIST dataset to ClearML.
+CONFIRMED | serving/preprocess/mnist.py
+  MNIST-specific request/response adapter (source template created in Phase 6.5B).
+  Promotion must render its model-version marker before registration; never deploy the template unchanged.
+  The existing V1/V2 ClearML Serving Task artifacts remain unchanged:
+    py_code_sentinel-mnist_1
+    py_code_sentinel-mnist_2
+
+[INTENTIONALLY GENERIC — DO NOT REWRITE JUST TO CHANGE DATASET]
+- Shared Gatekeeper compare/policy/metrics contracts: prefer swapping adapters/config.
+- src/sentinel/adapters/clearml_model.py: model artifact resolver (provider-specific, not MNIST-specific).
+- src/sentinel/adapters/torchscript_classifier.py: TorchScript adapter (framework-specific); replace only if the model type/framework changes.
+- Jenkinsfile / Jenkinsfile.retraining: should orchestrate generic steps and read model/serving configuration.
+- schema_version="v1" denotes message schema version, NOT model version.
+
+[CURRENT WORK AND DECISIONS]
+- Branch: phase-6-feedback-loop.
+- Baseline commit: 644a568 (serving contracts prepared).
+- Main model: productionReference (currently V1); Retraining MUST NOT update it automatically.
+- Retraining candidate after Gatekeeper PASS replaces only the Canary candidate reference.
+- Preserve the active traffic weights (currently 90% main / 10% Canary).
+- Future routing mode and weights are selected by the user through the UI; NOT implemented now.
+- Do not advance retraining checkpoint until model registration, routing update and verification succeed.
+- No manual application deployments; use Git/Jenkins deployment workflow.
+- Do not put credentials, tokens, or runtime secrets in this file.
+
+[HOW TO MAINTAIN]
+1. On adding/discovering a model-specific file, add its exact repository-relative path here.
+2. State what must be changed for a different model/dataset and whether the path is verified.
+3. When generic refactoring removes model dependence, mark the item GENERIC or replace its path with the adapter/config path.
+4. Update this inventory in the same Git commit as the new model-specific file.

@@ -5,7 +5,9 @@ FROM python:3.10-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
-    PATH="/app/.venv/bin:$PATH" \
+    UV_TOOL_BIN_DIR=/opt/uv-bin \
+    UV_TOOL_DIR=/opt/uv-tools \
+    PATH="/opt/uv-bin:/app/.venv/bin:$PATH" \
     PYTHONPATH="/app/src"
 
 WORKDIR /app
@@ -24,8 +26,24 @@ RUN uv sync \
     --no-install-project \
     --no-cache
 
+# Install the same ClearML Serving CLI version used during local verification.
+# Keep CLI dependencies isolated from the locked training environment.
+RUN uv tool install \
+    --python /usr/local/bin/python \
+    --no-cache \
+    "clearml-serving==1.3.5"
+
 COPY src/ ./src/
 COPY conf/ ./conf/
+
+# The promotion Job reuses this immutable training image.
+# Copy only the promotion tools and model-specific preprocessing templates.
+COPY scripts/register_serving_candidate.py \
+     scripts/promote_serving_canary.py \
+     scripts/render_serving_preprocess.py \
+     ./scripts/
+COPY serving/preprocess/ ./serving/preprocess/
+COPY scripts/verify_serving_inference.py ./scripts/
 
 COPY data/golden_set.csv ./data/golden_set.csv
 COPY data/golden_set_manifest.json ./data/golden_set_manifest.json
