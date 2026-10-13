@@ -1305,7 +1305,7 @@ ASKPASS
                           retraining-canary-promotion-job.yaml > /dev/null
                         CANARY_IMAGE="$(
                             sed -n \
-                              's/^[[:space:]]*image: "\(.*\)"$/\1/p' \
+                              's/^[[:space:]]*image: "\\(.*\\)"$/\\1/p' \
                               retraining-canary-promotion-job.yaml \
                             | head -n 1
                         )"
