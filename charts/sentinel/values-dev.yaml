@@ -41,5 +41,9 @@ retraining:
     filesHost: "http://192.168.49.1:8081"
     webHost: "http://192.168.49.1:8080"
 
+  canaryPromotion:
+    enabled: false
+    servingTaskId: "df15e55dabaf4489882f1c8c8f44ed7a"
+
 opsFlags:
   retrainingEnabled: false
