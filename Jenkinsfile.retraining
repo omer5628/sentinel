@@ -22,6 +22,21 @@ spec:
           cpu: "1"
           memory: 1Gi
 
+    - name: git
+      image: alpine/git:2.47.2
+      command:
+        - sh
+        - -c
+      args:
+        - sleep infinity
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
     - name: helm
       image: alpine/helm:3.18.6
       command:
@@ -103,7 +118,7 @@ spec:
 
     options {
         disableConcurrentBuilds()
-        timeout(time: 45, unit: 'MINUTES')
+        timeout(time: 75, unit: 'MINUTES')
     }
 
     stages {
@@ -1130,8 +1145,338 @@ PY
 
                     echo(
                         'Gatekeeper passed. ' +
-                        'The retraining checkpoint may now advance.'
+                        'The candidate is eligible for Canary promotion. '
+                        + 'Checkpoint will advance only after Canary and Git are verified.'
                     )
+                }
+            }
+        }
+
+        stage('Resolve Current Canary Reference') {
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+
+                        python scripts/update_canary_reference.py \
+                          --file charts/sentinel/values-prod.yaml \
+                          --read-current \
+                          > .previous-canary-model-id
+
+                        PREVIOUS_CANARY_ID="$(cat .previous-canary-model-id)"
+                        CURRENT_MODEL_ID="$(cat .current-model-id)"
+                        CANDIDATE_MODEL_ID="$(cat .candidate-model-id)"
+
+                        if [ "$PREVIOUS_CANARY_ID" = "$CURRENT_MODEL_ID" ]; then
+                            echo "Production and Canary models must differ."
+                            exit 1
+                        fi
+                        if [ "$PREVIOUS_CANARY_ID" = "$CANDIDATE_MODEL_ID" ]; then
+                            echo "Candidate is already the declared Canary model."
+                            exit 1
+                        fi
+
+                        echo "Git Canary model reference: $PREVIOUS_CANARY_ID"
+                    '''
+                }
+            }
+        }
+
+        stage('Preflight Git Synchronization') {
+            steps {
+                container('git') {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'github-push-credentials',
+                            usernameVariable: 'GIT_PUSH_USERNAME',
+                            passwordVariable: 'GIT_PUSH_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                        set +x
+                        set -eu
+
+                        # Jenkins Git plugin usually exposes GIT_BRANCH=origin/<branch>.
+                        case "${GIT_BRANCH:-}" in
+                            origin/*)
+                                TARGET_BRANCH="${GIT_BRANCH#origin/}"
+                                ;;
+                            refs/remotes/origin/*)
+                                TARGET_BRANCH="${GIT_BRANCH#refs/remotes/origin/}"
+                                ;;
+                            *)
+                                echo "Cannot determine the trusted checkout branch."
+                                echo "GIT_BRANCH=${GIT_BRANCH:-unset}"
+                                exit 1
+                                ;;
+                        esac
+
+                        git check-ref-format --branch "$TARGET_BRANCH" > /dev/null
+                        printf '%s\n' "$TARGET_BRANCH" > .promotion-git-branch
+
+                        git config --global --add safe.directory "$PWD"
+                        REMOTE_URL="$(git remote get-url origin)"
+                        case "$REMOTE_URL" in
+                            https://github.com/*)
+                                ;;
+                            *)
+                                echo "Only HTTPS GitHub origins are supported by this credential."
+                                exit 1
+                                ;;
+                        esac
+
+                        LOCAL_SHA="$(git rev-parse HEAD)"
+                        REMOTE_SHA="$(
+                            git ls-remote --exit-code origin \
+                              "refs/heads/$TARGET_BRANCH" \
+                            | awk '{print $1}'
+                        )"
+                        if [ -z "$REMOTE_SHA" ] || [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+                            echo "Git remote advanced or checkout is stale; refusing promotion."
+                            exit 1
+                        fi
+
+                        git diff --quiet -- charts/sentinel/values-prod.yaml
+                        git diff --cached --quiet -- charts/sentinel/values-prod.yaml
+                        # Verify push authorization without changing remote state.
+                        ASKPASS_FILE="$(mktemp)"
+                        trap 'rm -f "$ASKPASS_FILE"' EXIT HUP INT TERM
+                        cat > "$ASKPASS_FILE" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+    *sername*) printf '%s\n' "$GIT_PUSH_USERNAME" ;;
+    *assword*) printf '%s\n' "$GIT_PUSH_PASSWORD" ;;
+    *) exit 1 ;;
+esac
+ASKPASS
+                        chmod 700 "$ASKPASS_FILE"
+                        export GIT_TERMINAL_PROMPT=0
+                        export GIT_ASKPASS="$ASKPASS_FILE"
+                        git -c credential.helper= push --dry-run origin \
+                          "HEAD:refs/heads/$TARGET_BRANCH"
+                        echo "Git preflight passed for $TARGET_BRANCH at $REMOTE_SHA"
+                    '''
+                    }
+                }
+            }
+        }
+
+        stage('Render Canary Promotion Job') {
+            steps {
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        CURRENT_MODEL_ID="$(cat .current-model-id)"
+                        PREVIOUS_CANARY_ID="$(cat .previous-canary-model-id)"
+                        CANDIDATE_MODEL_ID="$(cat .candidate-model-id)"
+                        WORKER_TAG="$(cat .retraining-worker-tag)"
+
+                        case "$WORKER_TAG" in
+                            ''|*[!0-9]*)
+                                echo "Invalid immutable training image tag."
+                                exit 1
+                                ;;
+                        esac
+
+                        helm template sentinel \
+                          charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.validation.enabled=false \
+                          --set retraining.canaryPromotion.enabled=true \
+                          --set-string retraining.runId="${BUILD_NUMBER}" \
+                          --set-string model.productionReference="${CURRENT_MODEL_ID}" \
+                          --set-string retraining.canaryPromotion.candidateModelReference="${CANDIDATE_MODEL_ID}" \
+                          --set-string retraining.canaryPromotion.expectedPreviousCanaryModelReference="${PREVIOUS_CANARY_ID}" \
+                          --set-string retraining.canaryPromotion.image.tag="${WORKER_TAG}" \
+                          --show-only templates/retraining-canary-promotion-job.yaml \
+                          > retraining-canary-promotion-job.yaml
+
+                        test -s retraining-canary-promotion-job.yaml
+                        grep -F "sentinel-retraining-canary-promotion-${BUILD_NUMBER}" \
+                          retraining-canary-promotion-job.yaml > /dev/null
+                        grep -F "${CURRENT_MODEL_ID}" \
+                          retraining-canary-promotion-job.yaml > /dev/null
+                        grep -F "${PREVIOUS_CANARY_ID}" \
+                          retraining-canary-promotion-job.yaml > /dev/null
+                        grep -F "${CANDIDATE_MODEL_ID}" \
+                          retraining-canary-promotion-job.yaml > /dev/null
+                        CANARY_IMAGE="$(
+                            sed -n \
+                              's/^[[:space:]]*image: "\(.*\)"$/\1/p' \
+                              retraining-canary-promotion-job.yaml \
+                            | head -n 1
+                        )"
+                        case "$CANARY_IMAGE" in
+                            *:"${WORKER_TAG}")
+                                ;;
+                            *)
+                                echo "Canary Job image is not the deployed immutable tag."
+                                echo "Image: $CANARY_IMAGE"
+                                exit 1
+                                ;;
+                        esac
+                        echo "Canary Promotion Job rendered using $CANARY_IMAGE."
+                    '''
+                }
+            }
+        }
+
+        stage('Run Canary Promotion') {
+            steps {
+                script {
+                    def promotionStatus
+
+                    container('kubectl') {
+                        promotionStatus = sh(
+                            script: '''
+                                set -u
+
+                                JOB_NAME="sentinel-retraining-canary-promotion-${BUILD_NUMBER}"
+
+                                if ! kubectl create \
+                                  --namespace sentinel-dev \
+                                  -f retraining-canary-promotion-job.yaml
+                                then
+                                    echo "Failed to create Canary Promotion Job."
+                                    exit 1
+                                fi
+
+                                if ! kubectl wait \
+                                  --namespace sentinel-dev \
+                                  --for=condition=complete \
+                                  "job/${JOB_NAME}" \
+                                  --timeout=10m
+                                then
+                                    echo "Canary Promotion Job failed or timed out."
+                                    kubectl describe \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" || true
+                                    kubectl logs \
+                                      --namespace sentinel-dev \
+                                      "job/${JOB_NAME}" \
+                                      --all-containers=true \
+                                      > retraining-canary-promotion.log 2>&1 || true
+                                    cat retraining-canary-promotion.log || true
+                                    echo "Inspect actual ClearML routing before any retry."
+                                    exit 1
+                                fi
+
+                                kubectl logs \
+                                  --namespace sentinel-dev \
+                                  "job/${JOB_NAME}" \
+                                  --all-containers=true \
+                                  > retraining-canary-promotion.log 2>&1
+
+                                cat retraining-canary-promotion.log
+                                if ! grep -Fx \
+                                  'canary_promotion_status=routing_verified' \
+                                  retraining-canary-promotion.log > /dev/null
+                                then
+                                    echo "Promotion Job did not confirm routing verification."
+                                    exit 1
+                                fi
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+
+                    archiveArtifacts(
+                        artifacts: 'retraining-canary-promotion.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+                    if (promotionStatus != 0) {
+                        error(
+                            'Canary Promotion failed or could not be verified. ' +
+                            'Checkpoint will not advance.'
+                        )
+                    }
+                    echo 'Canary Promotion routing verified.'
+                }
+            }
+        }
+
+        stage('Update Canary Reference in Git') {
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        PREVIOUS_CANARY_ID="$(cat .previous-canary-model-id)"
+                        CANDIDATE_MODEL_ID="$(cat .candidate-model-id)"
+
+                        python scripts/update_canary_reference.py \
+                          --file charts/sentinel/values-prod.yaml \
+                          --expected-old-id "$PREVIOUS_CANARY_ID" \
+                          --new-id "$CANDIDATE_MODEL_ID"
+                    '''
+                }
+
+                script {
+                    def gitStatus
+                    container('git') {
+                        withCredentials([
+                            usernamePassword(
+                                credentialsId: 'github-push-credentials',
+                                usernameVariable: 'GIT_PUSH_USERNAME',
+                                passwordVariable: 'GIT_PUSH_PASSWORD'
+                            )
+                        ]) {
+                            gitStatus = sh(
+                                script: '''
+                                    set +x
+                                    set -eu
+
+                                    git config --global --add safe.directory "$PWD"
+                                    TARGET_BRANCH="$(cat .promotion-git-branch)"
+                                    git check-ref-format --branch "$TARGET_BRANCH" > /dev/null
+
+                                    git add -- charts/sentinel/values-prod.yaml
+                                    if ! git diff --cached --quiet -- charts/sentinel/values-prod.yaml
+                                    then
+                                        git -c user.name='Sentinel Retraining Bot' \
+                                            -c user.email='sentinel-retraining-bot@users.noreply.github.com' \
+                                            commit -m "chore: record Canary model $(cat .candidate-model-id)"
+                                    fi
+
+                                    ASKPASS_FILE="$(mktemp)"
+                                    trap 'rm -f "$ASKPASS_FILE"' EXIT HUP INT TERM
+                                    cat > "$ASKPASS_FILE" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+    *sername*) printf '%s\n' "$GIT_PUSH_USERNAME" ;;
+    *assword*) printf '%s\n' "$GIT_PUSH_PASSWORD" ;;
+    *) exit 1 ;;
+esac
+ASKPASS
+                                    chmod 700 "$ASKPASS_FILE"
+
+                                    export GIT_TERMINAL_PROMPT=0
+                                    export GIT_ASKPASS="$ASKPASS_FILE"
+                                    git -c credential.helper= push origin \
+                                      "HEAD:refs/heads/$TARGET_BRANCH"
+
+                                    REMOTE_SHA="$(
+                                        git ls-remote --exit-code origin \
+                                          "refs/heads/$TARGET_BRANCH" | awk '{print $1}'
+                                    )"
+                                    test "$(git rev-parse HEAD)" = "$REMOTE_SHA"
+                                    echo "Canary Git reference committed and pushed successfully."
+                                ''',
+                                returnStatus: true
+                            )
+                        }
+                    }
+                    if (gitStatus != 0) {
+                        error(
+                            'CRITICAL: Canary routing may have changed but Git ' +
+                            'update failed. Check live Serving vs Git, ' +
+                            'reconcile before retraining again. ' +
+                            'Checkpoint was not updated.'
+                        )
+                    }
                 }
             }
         }
@@ -1369,6 +1714,13 @@ PY
                       || true
 
                     kubectl delete job \
+                      "sentinel-retraining-canary-promotion-${BUILD_NUMBER}" \
+                      --namespace sentinel-dev \
+                      --ignore-not-found=true \
+                      --wait=false \
+                      || true
+
+                    kubectl delete job \
                       "sentinel-retraining-checkpoint-${BUILD_NUMBER}" \
                       --namespace sentinel-dev \
                       --ignore-not-found=true \
@@ -1386,6 +1738,10 @@ PY
                 rm -f retraining-train.log
                 rm -f retraining-gatekeeper-job.yaml
                 rm -f retraining-gatekeeper.log
+                rm -f retraining-canary-promotion-job.yaml
+                rm -f retraining-canary-promotion.log
+                rm -f .previous-canary-model-id
+                rm -f .promotion-git-branch
                 rm -f retraining-checkpoint-job.yaml
                 rm -f retraining-checkpoint.log
                 rm -f .current-model-id

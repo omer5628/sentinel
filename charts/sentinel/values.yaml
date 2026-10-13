@@ -346,6 +346,7 @@ retraining:
     enabled: false
     servingTaskId: ""
     candidateModelReference: ""
+    expectedPreviousCanaryModelReference: ""
     servingConfig: "conf/serving/mnist.yaml"
     inferenceBaseUrl: "http://clearml-serving-inference.default.svc.cluster.local:8080"
     smokeTestAttempts: 12

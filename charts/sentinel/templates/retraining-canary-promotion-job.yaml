@@ -17,6 +17,10 @@
     "retraining.canaryPromotion.candidateModelReference is required"
     $promotion.candidateModelReference
 -}}
+{{- $expectedPrevious := required
+    "retraining.canaryPromotion.expectedPreviousCanaryModelReference is required"
+    $promotion.expectedPreviousCanaryModelReference
+-}}
 {{- $production := required
     "model.productionReference is required for Canary promotion"
     .Values.model.productionReference
@@ -106,6 +110,48 @@ spec:
                 --attempts "$SMOKE_TEST_ATTEMPTS" \
                 --retry-seconds "$SMOKE_TEST_RETRY_SECONDS"
 
+              # Fail closed if live Canary drifted from its Git reference.
+              # An already-promoted candidate is allowed for a safe retry.
+              python - <<'PY'
+              import os
+              import sys
+
+              sys.path.insert(0, "scripts")
+              from omegaconf import OmegaConf
+              from promote_serving_canary import (
+                  _model_id_at,
+                  plan_canary_promotion,
+                  read_serving_state,
+              )
+
+              cfg = OmegaConf.load(os.environ["SERVING_CONFIG"])
+              task_id = os.environ["SERVING_TASK_ID"]
+              production = os.environ["PRODUCTION_MODEL_ID"]
+              candidate = os.environ["CANDIDATE_MODEL_ID"]
+              expected_previous = os.environ["EXPECTED_PREVIOUS_CANARY_MODEL_ID"]
+              state = read_serving_state(task_id)
+              plan = plan_canary_promotion(
+                  state=state,
+                  task_id=task_id,
+                  canary_endpoint=str(cfg.endpoints.canary),
+                  base_endpoint=str(cfg.endpoints.base),
+                  production_model_id=production,
+                  candidate_model_id=candidate,
+                  candidate_serving_version=int(os.environ["SERVING_VERSION"]),
+              )
+              if not plan.already_applied:
+                  previous_index = 1 - plan.production_index
+                  previous_id = _model_id_at(
+                      state, plan.original_endpoints[previous_index]
+                  )
+                  if previous_id != expected_previous.lower():
+                      raise RuntimeError(
+                          "Live Canary model differs from Git; refusing promotion. "
+                          f"Expected {expected_previous}, found {previous_id}."
+                      )
+              print("Canary/Git preflight consistency verified.")
+              PY
+
               python scripts/promote_serving_canary.py \
                 --config "$SERVING_CONFIG" \
                 --serving-task-id "$SERVING_TASK_ID" \
@@ -130,6 +176,8 @@ spec:
               value: {{ $production | quote }}
             - name: CANDIDATE_MODEL_ID
               value: {{ $candidate | quote }}
+            - name: EXPECTED_PREVIOUS_CANARY_MODEL_ID
+              value: {{ $expectedPrevious | quote }}
             - name: MODEL_VERSION
               value: {{ printf "retrain-%s" (toString $runId) | quote }}
             - name: SERVING_VERSION
