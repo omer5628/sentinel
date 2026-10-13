@@ -121,7 +121,88 @@ spec:
         timeout(time: 75, unit: 'MINUTES')
     }
 
+    parameters {
+        booleanParam(
+            name: 'GIT_PREFLIGHT_ONLY',
+            defaultValue: false,
+            description: 'Verify GitHub push credentials without training or modifying Canary.'
+        )
+    }
+
     stages {
+        stage('Git Credentials Preflight Only') {
+            when {
+                expression { params.GIT_PREFLIGHT_ONLY == true }
+            }
+            steps {
+                container('git') {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'github-push-credentials',
+                            usernameVariable: 'GIT_PUSH_USERNAME',
+                            passwordVariable: 'GIT_PUSH_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                            set +x
+                            set -eu
+
+                            git config --global --add safe.directory "$PWD"
+                            REMOTE_URL="$(git remote get-url origin)"
+                            case "$REMOTE_URL" in
+                                https://github.com/*) ;;
+                                *) echo 'Unexpected Git remote; refusing preflight.'; exit 1 ;;
+                            esac
+
+                            case "${GIT_BRANCH:-}" in
+                                origin/*) TARGET_BRANCH="${GIT_BRANCH#origin/}" ;;
+                                refs/remotes/origin/*)
+                                    TARGET_BRANCH="${GIT_BRANCH#refs/remotes/origin/}" ;;
+                                *) echo 'Unexpected Git checkout branch.'; exit 1 ;;
+                            esac
+                            git check-ref-format --branch "$TARGET_BRANCH" >/dev/null
+                            LOCAL_SHA="$(git rev-parse HEAD)"
+                            REMOTE_SHA="$(
+                                git ls-remote --exit-code origin \
+                                  "refs/heads/$TARGET_BRANCH" | awk '{print $1}'
+                            )"
+                            if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+                                echo 'Checkout differs from remote; refusing preflight.'
+                                exit 1
+                            fi
+
+                            ASKPASS_FILE="$(mktemp)"
+                            trap 'rm -f "$ASKPASS_FILE"' EXIT HUP INT TERM
+                            cat > "$ASKPASS_FILE" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+    *sername*) printf '%s\n' "$GIT_PUSH_USERNAME" ;;
+    *assword*) printf '%s\n' "$GIT_PUSH_PASSWORD" ;;
+    *) exit 1 ;;
+esac
+ASKPASS
+                            chmod 700 "$ASKPASS_FILE"
+                            export GIT_TERMINAL_PROMPT=0
+                            export GIT_ASKPASS="$ASKPASS_FILE"
+
+                            # Dry-run a new temporary branch ref to exercise write permissions.
+                            # The remote repository is not changed by --dry-run.
+                            git -c credential.helper= push --dry-run origin \
+                              "HEAD:refs/heads/sentinel-preflight-${BUILD_NUMBER}"
+                            echo 'Git credentials preflight passed (dry-run only).'
+                        '''
+                    }
+                }
+                script {
+                    currentBuild.result = 'ABORTED'
+                    error(
+                        'Git credentials preflight finished. ' +
+                        'No training or Canary promotion was started.'
+                    )
+                }
+            }
+        }
+
         stage('Emergency Brake') {
             steps {
                 script {
