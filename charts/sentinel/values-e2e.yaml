@@ -9,6 +9,10 @@ model:
 retraining:
   pipelineName: "sentinel-retraining-e2e"
 
+  database:
+    configMapName: "sentinel-retraining-e2e-db"
+    credentialsSecretName: "sentinel-retraining-e2e-db-credentials"
+
   canaryPromotion:
     enabled: false
     servingTaskId: "f80299ed1fb44353a347dafe47b7dd25"

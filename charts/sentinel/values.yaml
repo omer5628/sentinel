@@ -317,6 +317,10 @@ retraining:
   cutoff: ""
   pipelineName: "sentinel-retraining"
 
+  database:
+    configMapName: "sentinel-common-config"
+    credentialsSecretName: "sentinel-service-secrets"
+
   minimumNewRows: 1000
   discardLabel: "Discard"
 
