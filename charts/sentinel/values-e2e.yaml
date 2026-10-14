@@ -7,6 +7,8 @@ model:
   canaryReference: ""
 
 retraining:
+  pipelineName: "sentinel-retraining-e2e"
+
   canaryPromotion:
     enabled: false
     servingTaskId: "f80299ed1fb44353a347dafe47b7dd25"
