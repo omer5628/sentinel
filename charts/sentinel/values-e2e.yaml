@@ -1,0 +1,14 @@
+# Isolated retraining and Canary promotion E2E configuration.
+# Never use these settings for the production Serving release.
+
+model:
+  # Set these only after initializing the isolated Serving Task.
+  productionReference: ""
+  canaryReference: ""
+
+retraining:
+  canaryPromotion:
+    enabled: false
+    servingTaskId: "f80299ed1fb44353a347dafe47b7dd25"
+    servingConfig: "conf/serving/mnist.yaml"
+    inferenceBaseUrl: "http://clearml-serving-e2e-inference.sentinel-dev.svc.cluster.local:8080"
