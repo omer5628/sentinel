@@ -1,8 +1,19 @@
+
 {{- if .Values.retraining.enabled }}
 
 {{- $runId := required
     "retraining.runId is required when retraining is enabled"
     .Values.retraining.runId
+-}}
+
+{{- $dbConfigMapName := required
+    "retraining.database.configMapName is required"
+    .Values.retraining.database.configMapName
+-}}
+
+{{- $dbCredentialsSecretName := required
+    "retraining.database.credentialsSecretName is required"
+    .Values.retraining.database.credentialsSecretName
 -}}
 
 apiVersion: batch/v1
@@ -48,31 +59,31 @@ spec:
             - name: POSTGRES_HOST
               valueFrom:
                 configMapKeyRef:
-                  name: sentinel-common-config
+                  name: {{ $dbConfigMapName | quote }}
                   key: POSTGRES_HOST
 
             - name: POSTGRES_PORT
               valueFrom:
                 configMapKeyRef:
-                  name: sentinel-common-config
+                  name: {{ $dbConfigMapName | quote }}
                   key: POSTGRES_PORT
 
             - name: POSTGRES_DB
               valueFrom:
                 configMapKeyRef:
-                  name: sentinel-common-config
+                  name: {{ $dbConfigMapName | quote }}
                   key: POSTGRES_DB
 
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.existingSecret | quote }}
+                  name: {{ $dbCredentialsSecretName | quote }}
                   key: POSTGRES_USER
 
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.existingSecret | quote }}
+                  name: {{ $dbCredentialsSecretName | quote }}
                   key: POSTGRES_PASSWORD
 
             - name: RETRAINING_PIPELINE_NAME
