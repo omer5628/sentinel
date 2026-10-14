@@ -128,6 +128,11 @@ spec:
             defaultValue: false,
             description: 'Deploy isolated ClearML Serving E2E to sentinel-dev (not Production).'
         )
+        booleanParam(
+            name: 'BOOTSTRAP_E2E_DATABASE',
+            defaultValue: false,
+            description: 'Initialize isolated PostgreSQL E2E database in sentinel-dev only.'
+        )
     }
 
     options {
