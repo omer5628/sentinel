@@ -15,6 +15,16 @@
     .Values.retraining.validation.image.tag
 -}}
 
+{{- $dbConfigMapName := required
+    "retraining.database.configMapName is required"
+    .Values.retraining.database.configMapName
+-}}
+
+{{- $dbCredentialsSecretName := required
+    "retraining.database.credentialsSecretName is required"
+    .Values.retraining.database.credentialsSecretName
+-}}
+
 apiVersion: batch/v1
 kind: Job
 
@@ -58,31 +68,31 @@ spec:
             - name: POSTGRES_HOST
               valueFrom:
                 configMapKeyRef:
-                  name: sentinel-common-config
+                  name: {{ $dbConfigMapName | quote }}
                   key: POSTGRES_HOST
 
             - name: POSTGRES_PORT
               valueFrom:
                 configMapKeyRef:
-                  name: sentinel-common-config
+                  name: {{ $dbConfigMapName | quote }}
                   key: POSTGRES_PORT
 
             - name: POSTGRES_DB
               valueFrom:
                 configMapKeyRef:
-                  name: sentinel-common-config
+                  name: {{ $dbConfigMapName | quote }}
                   key: POSTGRES_DB
 
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.existingSecret | quote }}
+                  name: {{ $dbCredentialsSecretName | quote }}
                   key: POSTGRES_USER
 
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.existingSecret | quote }}
+                  name: {{ $dbCredentialsSecretName | quote }}
                   key: POSTGRES_PASSWORD
 
             - name: RETRAINING_PIPELINE_NAME
