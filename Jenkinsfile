@@ -122,6 +122,14 @@ spec:
         }
     }
 
+    parameters {
+        booleanParam(
+            name: 'DEPLOY_CLEARML_SERVING_E2E',
+            defaultValue: false,
+            description: 'Deploy isolated ClearML Serving E2E to sentinel-dev (not Production).'
+        )
+    }
+
     options {
         disableConcurrentBuilds()
         timeout(time: 45, unit: 'MINUTES')
@@ -341,6 +349,107 @@ spec:
                           -f charts/sentinel/values-dev.yaml \
                           --set-string api.image.tag=${BUILD_NUMBER} \
                           --set-string worker.image.tag=${BUILD_NUMBER} \
+                          --wait \
+                          --timeout 10m
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy ClearML Serving E2E') {
+            when {
+                expression { params.DEPLOY_CLEARML_SERVING_E2E == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python -c '
+from pathlib import Path
+import yaml
+
+e2e = yaml.safe_load(Path("charts/vendor/clearml-serving/values-e2e.yaml").read_text())
+dev = yaml.safe_load(Path("charts/sentinel/values-dev.yaml").read_text())
+config = e2e["clearml"]
+task_id = str(config.get("servingTaskId", "")).strip()
+live_task_id = str(dev["retraining"]["canaryPromotion"]["servingTaskId"]).strip()
+assert task_id and task_id != live_task_id, "E2E Serving Task ID must differ from the live Serving Task ID"
+assert config.get("existingSecret") == "clearml-retraining-credentials", "Expected E2E ClearML Kubernetes Secret"
+assert not config.get("apiAccessKey") and not config.get("apiSecretKey"), "Do not put ClearML credentials in Helm values"
+assert e2e["clearml_serving_triton"]["enabled"] is True, "Triton must be enabled for the E2E serving test"
+assert e2e["clearml_serving_statistics"]["enabled"] is False, "Statistics must be disabled for isolated E2E"
+print("E2E configuration safety checks passed.")
+'
+                    '''
+                }
+
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        kubectl get secret clearml-retraining-credentials \
+                          --namespace sentinel-dev \
+                          --output name > /dev/null
+                    '''
+                }
+
+                container('helm') {
+                    sh '''
+                        set -eu
+                        helm lint charts/vendor/clearml-serving \
+                          -f charts/vendor/clearml-serving/values-e2e.yaml
+
+                        helm template clearml-serving-e2e \
+                          charts/vendor/clearml-serving \
+                          --namespace sentinel-dev \
+                          -f charts/vendor/clearml-serving/values-e2e.yaml \
+                          > clearml-serving-e2e-render.yaml
+                    '''
+                }
+
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python -c '
+from pathlib import Path
+import yaml
+
+values = yaml.safe_load(Path("charts/vendor/clearml-serving/values-e2e.yaml").read_text())
+task_id = str(values["clearml"]["servingTaskId"])
+secret = str(values["clearml"]["existingSecret"])
+documents = [doc for doc in yaml.safe_load_all(Path("clearml-serving-e2e-render.yaml").read_text()) if doc]
+expected = {
+    ("Deployment", "clearml-serving-e2e-inference"),
+    ("Deployment", "clearml-serving-e2e-triton"),
+    ("Service", "clearml-serving-e2e-inference"),
+    ("Service", "clearml-serving-e2e-triton"),
+}
+actual = {(doc["kind"], doc["metadata"]["name"]) for doc in documents}
+assert actual == expected, f"Unexpected E2E Kubernetes resources: {actual ^ expected}"
+for doc in documents:
+    if doc["kind"] != "Deployment":
+        continue
+    env = doc["spec"]["template"]["spec"]["containers"][0]["env"]
+    for key in ("CLEARML_API_ACCESS_KEY", "CLEARML_API_SECRET_KEY"):
+        found = [item for item in env if item["name"] == key]
+        assert len(found) == 1, f"Expected exactly one {key}"
+        ref = found[0].get("valueFrom", {}).get("secretKeyRef", {})
+        assert ref == {"name": secret, "key": key}, f"Incorrect Kubernetes Secret reference for {key}"
+        assert "value" not in found[0], f"Plaintext credential field detected: {key}"
+    serving = [item for item in env if item["name"] == "CLEARML_SERVING_TASK_ID"]
+    assert len(serving) == 1 and serving[0].get("value") == task_id, "E2E Serving Task mismatch"
+print("E2E Helm render safety checks passed.")
+'
+                    '''
+                }
+
+                container('helm') {
+                    sh '''
+                        set -eu
+                        helm upgrade --install clearml-serving-e2e \
+                          charts/vendor/clearml-serving \
+                          --namespace sentinel-dev \
+                          -f charts/vendor/clearml-serving/values-e2e.yaml \
+                          --atomic \
                           --wait \
                           --timeout 10m
                     '''

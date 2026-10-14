@@ -1,0 +1,43 @@
+{{- if .Values.clearml_serving_inference.ingress.enabled -}}
+{{- if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion -}}
+apiVersion: networking.k8s.io/v1
+{{- else if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion -}}
+apiVersion: networking.k8s.io/v1beta1
+{{- else -}}
+apiVersion: extensions/v1beta1
+{{- end }}
+kind: Ingress
+metadata:
+  name: {{ include "clearmlServing.fullname" . }}-inference
+  labels:
+    clearml.serving.service: {{ include "clearmlServing.fullname" . }}-inference
+  annotations:
+    {{- toYaml .Values.clearml_serving_inference.ingress.annotations | nindent 4 }}
+spec:
+  {{- if .Values.clearml_serving_inference.ingress.ingressClassName }}
+  ingressClassName: {{ .Values.clearml_serving_inference.ingress.ingressClassName }}
+  {{- end }}
+  {{- if .Values.clearml_serving_inference.ingress.tlsSecretName }}
+  tls:
+    - hosts:
+        - {{ .Values.clearml_serving_inference.ingress.hostName }}
+      secretName: {{ .Values.clearml_serving_inference.ingress.tlsSecretName }}
+  {{- end }}
+  rules:
+  - host: {{ .Values.clearml_serving_inference.ingress.hostName }}
+    http:
+      paths:
+      - path: {{ .Values.clearml_serving_inference.ingress.path }}
+  {{ if semverCompare ">=1.19-0" .Capabilities.KubeVersion.GitVersion }}
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ include "clearmlServing.fullname" . }}-inference
+            port:
+              number: 8080
+  {{ else }}
+        backend:
+          servicename: {{ include "clearmlServing.fullname" . }}-inference
+          servicePort: 8080
+  {{ end }}
+{{- end }}
