@@ -13,6 +13,13 @@ retraining:
     configMapName: "sentinel-retraining-e2e-db"
     credentialsSecretName: "sentinel-retraining-e2e-db-credentials"
 
+  databaseBootstrap:
+    enabled: false
+    databaseName: "sentinel_e2e"
+    username: "sentinel_e2e_user"
+    adminCredentialsSecretName: "sentinel-service-secrets"
+    initSqlConfigMapName: "postgres-init-sql"
+
   canaryPromotion:
     enabled: false
     servingTaskId: "f80299ed1fb44353a347dafe47b7dd25"
