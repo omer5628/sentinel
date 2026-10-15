@@ -106,7 +106,7 @@ spec:
 
               BEGIN;
 
-              DO $$
+              DO $e2e_identity$
               BEGIN
                   IF current_database() <> 'sentinel_e2e'
                      OR current_user <> 'sentinel_e2e_user'
@@ -115,7 +115,7 @@ spec:
                           'E2E seed database identity verification failed';
                   END IF;
               END;
-              $$;
+              $e2e_identity$;
 
               INSERT INTO feature_log (
                   event_id,
@@ -139,7 +139,7 @@ spec:
               FROM generate_series(1, 1000) AS n
               ON CONFLICT (event_id) DO NOTHING;
 
-              DO $$
+              DO $e2e_count$
               DECLARE
                   fixture_count INTEGER;
               BEGIN
@@ -160,7 +160,7 @@ spec:
                       'E2E data gate fixtures verified: %',
                       fixture_count;
               END;
-              $$;
+              $e2e_count$;
 
               COMMIT;
 
