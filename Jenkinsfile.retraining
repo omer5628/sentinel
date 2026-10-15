@@ -132,9 +132,25 @@ spec:
             defaultValue: false,
             description: 'Run Fetch Data and its Data Gate only against isolated sentinel_e2e. Stop before training, Canary, Git, or checkpoint.'
         )
+        booleanParam(
+            name: 'E2E_SEED_DATA',
+            defaultValue: false,
+            description: 'Seed 1000 synthetic gate-only records in sentinel_e2e before E2E_FETCH_ONLY. Never enable for training.'
+        )
     }
 
     stages {
+        stage('E2E Seed Parameter Guard') {
+            steps {
+                script {
+                    if (params.E2E_SEED_DATA == true &&
+                        (params.E2E_FETCH_ONLY != true || params.GIT_PREFLIGHT_ONLY == true)) {
+                        error('E2E_SEED_DATA requires E2E_FETCH_ONLY=true and GIT_PREFLIGHT_ONLY=false.')
+                    }
+                }
+            }
+        }
+
         stage('Git Credentials Preflight Only') {
             when {
                 expression { params.GIT_PREFLIGHT_ONLY == true }
@@ -247,6 +263,133 @@ PYCODE
                           -n "$NAMESPACE" -o name > /dev/null
                         echo 'PASS: Isolated E2E database configuration is present.'
                     '''
+                }
+            }
+        }
+
+        stage('Seed E2E Data Gate Fixtures') {
+            when {
+                expression { params.E2E_FETCH_ONLY == true && params.E2E_SEED_DATA == true }
+            }
+            steps {
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        helm template sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          -f charts/sentinel/values-e2e.yaml \
+                          --set retraining.e2eDataSeed.enabled=true \
+                          --show-only templates/retraining-e2e-data-seed-job.yaml \
+                          > retraining-e2e-data-seed-job.yaml
+
+                        test -s retraining-e2e-data-seed-job.yaml
+                        echo 'E2E data seed Job rendered.'
+                    '''
+                }
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import yaml
+
+items = [
+    doc for doc in yaml.safe_load_all(
+        Path('retraining-e2e-data-seed-job.yaml').read_text()
+    ) if doc is not None
+]
+assert len(items) == 1, 'Expected exactly one E2E Seed Job'
+job = items[0]
+assert job['kind'] == 'Job'
+assert job['metadata']['name'] == 'sentinel-e2e-data-gate-seed'
+pod = job['spec']['template']['spec']
+assert pod['automountServiceAccountToken'] is False
+assert pod['restartPolicy'] == 'Never'
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+envs = {item['name']: item for item in container['env']}
+assert set(envs) == {
+    'K8S_NAMESPACE', 'POSTGRES_HOST', 'POSTGRES_PORT',
+    'POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD'
+}
+for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
+    assert envs[key]['valueFrom']['configMapKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db', 'key': key
+    }, f'Unsafe database source: {key}'
+for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
+    assert envs[key]['valueFrom']['secretKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db-credentials', 'key': key
+    }, f'Unsafe credentials source: {key}'
+assert envs['K8S_NAMESPACE']['valueFrom']['fieldRef']['fieldPath'] == 'metadata.namespace'
+script = '\n'.join(container['args'])
+for required in (
+    'sentinel-dev', 'sentinel_e2e', 'sentinel_e2e_user',
+    'current_database()', 'current_user',
+    'generate_series(1, 1000)', 'E2E_FIXTURE',
+):
+    assert required in script, f'Missing E2E safety check: {required}'
+print('PASS: E2E seed Job isolation validated')
+PYCODE
+                    '''
+                }
+                script {
+                    def seedStatus
+                    container('kubectl') {
+                        seedStatus = sh(
+                            script: '''
+                                set -eu
+                                NAMESPACE=sentinel-dev
+                                JOB_NAME=sentinel-e2e-data-gate-seed
+
+                                E2E_DB="$(kubectl get configmap sentinel-retraining-e2e-db \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_DB}')"
+                                test "$E2E_DB" = 'sentinel_e2e' || {
+                                    echo 'Refusing seed: database is not sentinel_e2e.' >&2
+                                    exit 1
+                                }
+
+                                E2E_USER="$(kubectl get secret sentinel-retraining-e2e-db-credentials \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)"
+                                test "$E2E_USER" = 'sentinel_e2e_user' || {
+                                    echo 'Refusing seed: unexpected database user.' >&2
+                                    exit 1
+                                }
+
+                                # Jenkins is the only component authorized to create this test Job.
+                                kubectl create -n "$NAMESPACE" -f retraining-e2e-data-seed-job.yaml
+                                touch .e2e-seed-job-created
+
+                                if ! kubectl wait -n "$NAMESPACE" \
+                                  --for=condition=complete "job/${JOB_NAME}" --timeout=5m
+                                then
+                                    echo 'E2E seed Job failed or timed out.' >&2
+                                    kubectl describe -n "$NAMESPACE" "job/${JOB_NAME}" || true
+                                    kubectl logs -n "$NAMESPACE" "job/${JOB_NAME}" \
+                                      --all-containers=true > retraining-e2e-data-seed.log 2>&1 || true
+                                    cat retraining-e2e-data-seed.log || true
+                                    exit 1
+                                fi
+
+                                kubectl logs -n "$NAMESPACE" "job/${JOB_NAME}" \
+                                  --all-containers=true > retraining-e2e-data-seed.log 2>&1
+                                cat retraining-e2e-data-seed.log
+                                grep -F 'E2E data gate seed completed successfully.' \
+                                  retraining-e2e-data-seed.log > /dev/null
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+                    archiveArtifacts(
+                        artifacts: 'retraining-e2e-data-seed.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+                    if (seedStatus != 0) {
+                        error('Isolated E2E data seed failed. Fetch Data will not run.')
+                    }
+                    echo 'E2E seed complete. Continuing to fetch-only Data Gate test.'
                 }
             }
         }
@@ -1890,6 +2033,13 @@ ASKPASS
         always {
             container('kubectl') {
                 sh '''
+                    if [ -f .e2e-seed-job-created ]; then
+                        kubectl delete job sentinel-e2e-data-gate-seed \
+                          --namespace sentinel-dev \
+                          --ignore-not-found=true \
+                          --wait=false || true
+                    fi
+
                     kubectl delete job \
                       "sentinel-retraining-fetch-${BUILD_NUMBER}" \
                       --namespace sentinel-dev \
@@ -1957,6 +2107,9 @@ ASKPASS
                 rm -f .retraining-cutoff
                 rm -f .retraining-new-rows
                 rm -f .retraining-minimum-new-rows
+                rm -f retraining-e2e-data-seed-job.yaml
+                rm -f retraining-e2e-data-seed.log
+                rm -f .e2e-seed-job-created
             '''
         }
     }
