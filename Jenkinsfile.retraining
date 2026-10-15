@@ -323,7 +323,7 @@ for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
         'name': 'sentinel-retraining-e2e-db-credentials', 'key': key
     }, f'Unsafe credentials source: {key}'
 assert envs['K8S_NAMESPACE']['valueFrom']['fieldRef']['fieldPath'] == 'metadata.namespace'
-script = '\n'.join(container['args'])
+script = ''.join(container['args'])
 for required in (
     'sentinel-dev', 'sentinel_e2e', 'sentinel_e2e_user',
     'current_database()', 'current_user',
