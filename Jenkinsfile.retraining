@@ -127,6 +127,11 @@ spec:
             defaultValue: false,
             description: 'Verify GitHub push credentials without training or modifying Canary.'
         )
+        booleanParam(
+            name: 'E2E_FETCH_ONLY',
+            defaultValue: false,
+            description: 'Run Fetch Data and its Data Gate only against isolated sentinel_e2e. Stop before training, Canary, Git, or checkpoint.'
+        )
     }
 
     stages {
@@ -203,40 +208,91 @@ ASKPASS
             }
         }
 
+        stage('E2E Fetch Preflight') {
+            when {
+                expression { params.E2E_FETCH_ONLY == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import yaml
+
+config = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
+retraining = config['retraining']
+assert retraining['pipelineName'] == 'sentinel-retraining-e2e'
+assert retraining['database'] == {
+    'configMapName': 'sentinel-retraining-e2e-db',
+    'credentialsSecretName': 'sentinel-retraining-e2e-db-credentials',
+}, 'Unsafe E2E database configuration'
+assert retraining['databaseBootstrap']['databaseName'] == 'sentinel_e2e'
+assert retraining['canaryPromotion']['enabled'] is False
+print('PASS: E2E Fetch configuration preflight')
+PYCODE
+                    '''
+                }
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        NAMESPACE=sentinel-dev
+                        E2E_DB="$(kubectl get configmap sentinel-retraining-e2e-db \
+                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_DB}')"
+                        test "$E2E_DB" = 'sentinel_e2e' || {
+                            echo 'Refusing E2E: wrong database in ConfigMap.' >&2
+                            exit 1
+                        }
+                        kubectl get secret sentinel-retraining-e2e-db-credentials \
+                          -n "$NAMESPACE" -o name > /dev/null
+                        echo 'PASS: Isolated E2E database configuration is present.'
+                    '''
+                }
+            }
+        }
+
         stage('Emergency Brake') {
             steps {
                 script {
-                    def retrainingEnabled = sh(
-                        script: '''
-                            python scripts/read_ops_flag.py \
-                              RETRAINING_ENABLED \
-                              sentinel-dev
-                        ''',
-                        returnStdout: true
-                    ).trim()
+                    if (params.E2E_FETCH_ONLY == true) {
+                        echo 'Isolated E2E fetch-only mode: bypassing the live retraining brake.'
+                        echo 'No retraining training, Canary promotion, Git update or checkpoint is permitted.'
+                    } else {
+                        def retrainingEnabled = sh(
+                            script: '''
+                                python scripts/read_ops_flag.py \
+                                  RETRAINING_ENABLED \
+                                  sentinel-dev
+                            ''',
+                            returnStdout: true
+                        ).trim()
 
-                    echo(
-                        "RETRAINING_ENABLED=${retrainingEnabled}"
-                    )
+                        echo(
+                            "RETRAINING_ENABLED=${retrainingEnabled}"
+                        )
 
-                    if (retrainingEnabled != 'true') {
-                        currentBuild.result = 'ABORTED'
+                        if (retrainingEnabled != 'true') {
+                            currentBuild.result = 'ABORTED'
 
-                        error(
-                            'Continuous retraining is disabled ' +
-                            'by sentinel-ops-flags.'
+                            error(
+                                'Continuous retraining is disabled ' +
+                                'by sentinel-ops-flags.'
+                            )
+                        }
+
+                        echo(
+                            'Emergency brake passed. ' +
+                            'Continuous retraining is enabled.'
                         )
                     }
-
-                    echo(
-                        'Emergency brake passed. ' +
-                        'Continuous retraining is enabled.'
-                    )
                 }
             }
         }
 
         stage('Resolve Current Model') {
+            when {
+                expression { params.E2E_FETCH_ONLY != true }
+            }
             steps {
                 container('python') {
                     sh '''
@@ -408,10 +464,16 @@ PY
                             cat .retraining-worker-tag
                         )"
 
+                        # Preserve the standard config unless E2E mode was explicitly requested.
+                        set -- -f charts/sentinel/values-dev.yaml
+                        if [ "${E2E_FETCH_ONLY:-false}" = 'true' ]; then
+                            set -- "$@" -f charts/sentinel/values-e2e.yaml
+                        fi
+
                         helm template sentinel \
                           charts/sentinel \
                           --namespace sentinel-dev \
-                          -f charts/sentinel/values-dev.yaml \
+                          "$@" \
                           --set retraining.enabled=true \
                           --set retraining.validation.enabled=false \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
@@ -433,6 +495,61 @@ PY
                           > /dev/null
 
                         echo "Retraining Fetch Data Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Verify E2E Fetch Isolation') {
+            when {
+                expression { params.E2E_FETCH_ONLY == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import os
+import yaml
+
+manifests = [
+    doc for doc in yaml.safe_load_all(
+        Path('retraining-fetch-job.yaml').read_text()
+    ) if doc
+]
+assert len(manifests) == 1, 'Expected exactly one E2E Fetch Job'
+job = manifests[0]
+assert job['kind'] == 'Job'
+assert job['metadata']['name'] == f"sentinel-retraining-fetch-{os.environ['BUILD_NUMBER']}"
+pod = job['spec']['template']['spec']
+assert pod.get('automountServiceAccountToken') is False
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+assert container['command'] == ['python', '-m', 'sentinel.retraining.fetch_data']
+repository = Path('.retraining-worker-repository').read_text().strip()
+tag = Path('.retraining-worker-tag').read_text().strip()
+assert container['image'] == f'{repository}:{tag}', 'Worker image differs from deployed image'
+assert 'envFrom' not in container
+variables = {entry['name']: entry for entry in container['env']}
+for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
+    assert variables[key] == {
+        'name': key,
+        'valueFrom': {'configMapKeyRef': {
+            'name': 'sentinel-retraining-e2e-db', 'key': key
+        }}
+    }, f'Incorrect E2E DB ConfigMap reference: {key}'
+for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
+    assert variables[key] == {
+        'name': key,
+        'valueFrom': {'secretKeyRef': {
+            'name': 'sentinel-retraining-e2e-db-credentials', 'key': key
+        }}
+    }, f'Incorrect E2E DB Secret reference: {key}'
+assert variables['RETRAINING_PIPELINE_NAME']['value'] == 'sentinel-retraining-e2e'
+assert variables['RETRAINING_MIN_NEW_ROWS']['value'].isdigit()
+print('PASS: Fetch Job is isolated to E2E database credentials and namespace')
+PYCODE
                     '''
                 }
             }
@@ -610,6 +727,13 @@ PY
                         "Retraining data gate: " +
                         "${newRows}/${minimumNewRows} new rows."
                     )
+
+                    if (params.E2E_FETCH_ONLY == true) {
+                        echo "E2E Fetch Data Gate: ${gateStatus} (${newRows}/${minimumNewRows} new rows)."
+                        echo 'E2E fetch-only verification finished; no further stages will run.'
+                        currentBuild.result = 'ABORTED'
+                        error('E2E_FETCH_ONLY completed intentionally before training and promotion.')
+                    }
 
                     if (gateStatus == 'blocked') {
                         currentBuild.result = 'ABORTED'
