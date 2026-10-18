@@ -78,6 +78,8 @@ def load_tensor_dataset(
     holdout_manifest_path: Path | None = None,
     holdout_id_field: str | None = None,
     holdout_filter_reference: str | None = None,
+    max_samples: int | None = None,
+    sample_seed: int = 42,
 ) -> TensorDataset:
     """Load MNIST CSV data using the shared preprocessing function."""
 
@@ -148,6 +150,19 @@ def load_tensor_dataset(
             f"Excluded holdout samples: "
             f"{original_sample_count - len(dataframe)}"
         )
+
+    if max_samples is not None:
+        if not isinstance(max_samples, int) or max_samples <= 0:
+            raise ValueError("max_samples must be a positive integer.")
+
+        selected_count = min(max_samples, len(dataframe))
+        if selected_count < len(dataframe):
+            dataframe = dataframe.sample(
+                n=selected_count,
+                random_state=sample_seed,
+            ).reset_index(drop=True)
+
+        print(f"Base samples selected for training: {len(dataframe)}")
 
     label_column = next(
         (
@@ -777,13 +792,23 @@ def train(cfg: DictConfig) -> None:
         "Preparing tensors with shared preprocessing..."
     )
 
+    max_base_samples = OmegaConf.select(
+        cfg, "training.max_base_samples", default=None
+    )
+    if max_base_samples is not None:
+        max_base_samples = int(max_base_samples)
+        if max_base_samples <= 0:
+            raise ValueError("training.max_base_samples must be positive.")
+
     retraining_cutoff = (
         get_retraining_cutoff_from_environment()
     )
 
     if retraining_cutoff is None:
         base_tensor_dataset = load_tensor_dataset(
-            dataset_file
+            dataset_file,
+            max_samples=max_base_samples,
+            sample_seed=int(cfg.training.random_seed),
         )
     else:
         base_tensor_dataset = load_tensor_dataset(
@@ -799,6 +824,8 @@ def train(cfg: DictConfig) -> None:
             holdout_filter_reference=str(
                 cfg.gatekeeper.adapters.holdout.filter
             ),
+            max_samples=max_base_samples,
+            sample_seed=int(cfg.training.random_seed),
         )
 
     tensor_dataset = add_human_retraining_data(
@@ -987,6 +1014,25 @@ def main() -> None:
         cfg = compose(
             config_name="config",
         )
+
+    profile_name = os.getenv("SENTINEL_TRAINING_PROFILE", "").strip()
+    if profile_name:
+        if profile_name != "e2e_fast":
+            raise ValueError("Unsupported training profile.")
+        if not get_retraining_cutoff_from_environment():
+            raise ValueError("The e2e_fast profile requires a retraining cutoff.")
+        profile_file = config_dir / "profiles" / f"{profile_name}.yaml"
+        if not profile_file.is_file():
+            raise FileNotFoundError(f"Training profile not found: {profile_file}")
+        profile_config = OmegaConf.load(profile_file)
+        if OmegaConf.select(profile_config, "training.epochs") is None:
+            raise ValueError("Training profile must define training.epochs.")
+        if OmegaConf.select(profile_config, "training.max_base_samples") is None:
+            raise ValueError("Training profile must define training.max_base_samples.")
+        OmegaConf.set_struct(cfg, False)
+        cfg = OmegaConf.merge(cfg, profile_config)
+        OmegaConf.set_struct(cfg, True)
+        print(f"Using training profile: {profile_name}")
 
     cfg = apply_retraining_runtime_config(
         cfg

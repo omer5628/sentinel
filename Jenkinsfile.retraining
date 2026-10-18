@@ -665,7 +665,7 @@ PYCODE
                         grep -F 'sentinel.gatekeeper.compare' retraining-gatekeeper-job.yaml >/dev/null
                         grep -F 'automountServiceAccountToken: false' \
                           retraining-gatekeeper-job.yaml >/dev/null
-                        grep -F 'sentinel-gatekeeper' retraining-gatekeeper-job.yaml >/dev/null
+                        grep -F 'name: retraining-gatekeeper' retraining-gatekeeper-job.yaml >/dev/null
                         echo 'PASS: E2E Gatekeeper Job rendered with explicit model references.'
 '''
                 }
@@ -1777,7 +1777,8 @@ PYCODE
 
                         set -- -f charts/sentinel/values-dev.yaml
                         if [ "${E2E_TRAIN_ONLY:-false}" = 'true' ]; then
-                            set -- "$@" -f charts/sentinel/values-e2e.yaml
+                            set -- "$@" -f charts/sentinel/values-e2e.yaml \
+                              --set-string retraining.train.e2eProfile=e2e_fast
                         fi
 
                         helm template sentinel \
@@ -1882,6 +1883,7 @@ for name in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
     }, f'Unsafe E2E train Secret for {name}'
 assert variables['RETRAINING_CUTOFF']['value'] == Path('.retraining-cutoff').read_text().strip()
 assert variables['RETRAINING_EXPERIMENT_NAME']['value'] == f"retraining-{os.environ['BUILD_NUMBER']}"
+assert variables['SENTINEL_TRAINING_PROFILE']['value'] == 'e2e_fast', 'Fast training profile must be E2E-only'
 for name in ('CLEARML_API_HOST', 'CLEARML_FILES_HOST', 'CLEARML_WEB_HOST'):
     assert variables[name]['value'].strip(), f'Missing {name}'
 print('PASS: E2E Train Job database, image and experiment isolation validated')
