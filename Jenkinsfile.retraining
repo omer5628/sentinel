@@ -152,6 +152,11 @@ spec:
             defaultValue: false,
             description: 'Delete only the isolated synthetic E2E training fixtures, then stop.'
         )
+        booleanParam(
+            name: 'E2E_TRAIN_ONLY',
+            defaultValue: false,
+            description: 'Run isolated E2E Seed, Fetch, Validation and MNIST Training; stop before Gatekeeper, Canary, Git and checkpoint.'
+        )
     }
 
     stages {
@@ -161,7 +166,8 @@ spec:
                     if (params.E2E_CLEANUP_ONLY == true &&
                         (params.E2E_FETCH_ONLY == true ||
                          params.E2E_SEED_DATA == true ||
-                         params.GIT_PREFLIGHT_ONLY == true)) {
+                         params.GIT_PREFLIGHT_ONLY == true ||
+                         params.E2E_TRAIN_ONLY == true)) {
                         error('E2E_CLEANUP_ONLY must be the only enabled pipeline mode.')
                     }
                     if (params.E2E_SEED_DATA == true &&
@@ -173,7 +179,8 @@ spec:
                          params.E2E_SEED_DATA == true ||
                          params.E2E_CLEANUP_ONLY == true ||
                          params.E2E_TRAINING_CLEANUP_ONLY == true ||
-                         params.GIT_PREFLIGHT_ONLY == true)) {
+                         params.GIT_PREFLIGHT_ONLY == true ||
+                         params.E2E_TRAIN_ONLY == true)) {
                         error('E2E_VALIDATION_ONLY must be the only enabled pipeline mode.')
                     }
                     if (params.E2E_TRAINING_CLEANUP_ONLY == true &&
@@ -181,8 +188,18 @@ spec:
                          params.E2E_SEED_DATA == true ||
                          params.E2E_CLEANUP_ONLY == true ||
                          params.E2E_VALIDATION_ONLY == true ||
-                         params.GIT_PREFLIGHT_ONLY == true)) {
+                         params.GIT_PREFLIGHT_ONLY == true ||
+                         params.E2E_TRAIN_ONLY == true)) {
                         error('E2E_TRAINING_CLEANUP_ONLY must be the only enabled pipeline mode.')
+                    }
+                    if (params.E2E_TRAIN_ONLY == true &&
+                        (params.GIT_PREFLIGHT_ONLY == true ||
+                         params.E2E_FETCH_ONLY == true ||
+                         params.E2E_SEED_DATA == true ||
+                         params.E2E_CLEANUP_ONLY == true ||
+                         params.E2E_VALIDATION_ONLY == true ||
+                         params.E2E_TRAINING_CLEANUP_ONLY == true)) {
+                        error('E2E_TRAIN_ONLY must be the only enabled pipeline mode.')
                     }
                     if (params.GIT_PREFLIGHT_ONLY == true &&
                         params.E2E_FETCH_ONLY == true) {
@@ -563,7 +580,7 @@ PYCODE
 
         stage('E2E Fetch Preflight') {
             when {
-                expression { params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true }
+                expression { params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true || params.E2E_TRAIN_ONLY == true }
             }
             steps {
                 container('python') {
@@ -607,7 +624,7 @@ PYCODE
 
         stage('Seed E2E Training Fixtures') {
             when {
-                expression { params.E2E_VALIDATION_ONLY == true }
+                expression { params.E2E_VALIDATION_ONLY == true || params.E2E_TRAIN_ONLY == true }
             }
             steps {
                 container('helm') {
@@ -849,9 +866,9 @@ PYCODE
         stage('Emergency Brake') {
             steps {
                 script {
-                    if (params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true) {
+                    if (params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true || params.E2E_TRAIN_ONLY == true) {
                         echo 'Isolated E2E verification mode: bypassing the live retraining brake.'
-                        echo 'No retraining training, Canary promotion, Git update or checkpoint is permitted.'
+                        echo 'Only the requested E2E stages may run; Canary, Git update and checkpoint are forbidden.'
                     } else {
                         def retrainingEnabled = sh(
                             script: '''
@@ -886,7 +903,7 @@ PYCODE
 
         stage('Resolve Current Model') {
             when {
-                expression { params.E2E_FETCH_ONLY != true && params.E2E_VALIDATION_ONLY != true }
+                expression { params.E2E_FETCH_ONLY != true && params.E2E_VALIDATION_ONLY != true && params.E2E_TRAIN_ONLY != true }
             }
             steps {
                 container('python') {
@@ -1062,7 +1079,8 @@ PY
                         # Preserve the standard config unless E2E mode was explicitly requested.
                         set -- -f charts/sentinel/values-dev.yaml
                         if [ "${E2E_FETCH_ONLY:-false}" = 'true' ] ||
-                           [ "${E2E_VALIDATION_ONLY:-false}" = 'true' ]; then
+                           [ "${E2E_VALIDATION_ONLY:-false}" = 'true' ] ||
+                           [ "${E2E_TRAIN_ONLY:-false}" = 'true' ]; then
                             set -- "$@" -f charts/sentinel/values-e2e.yaml
                         fi
 
@@ -1098,7 +1116,7 @@ PY
 
         stage('Verify E2E Fetch Isolation') {
             when {
-                expression { params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true }
+                expression { params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true || params.E2E_TRAIN_ONLY == true }
             }
             steps {
                 container('python') {
@@ -1324,7 +1342,7 @@ PYCODE
                         "${newRows}/${minimumNewRows} new rows."
                     )
 
-                    if (params.E2E_VALIDATION_ONLY == true && gateStatus != 'passed') {
+                    if ((params.E2E_VALIDATION_ONLY == true || params.E2E_TRAIN_ONLY == true) && gateStatus != 'passed') {
                         error("E2E Validation requires passing Data Gate, got ${gateStatus} (${newRows}/${minimumNewRows}).")
                     }
 
@@ -1374,7 +1392,8 @@ PYCODE
                         )"
 
                         set -- -f charts/sentinel/values-dev.yaml
-                        if [ "${E2E_VALIDATION_ONLY:-false}" = 'true' ]; then
+                        if [ "${E2E_VALIDATION_ONLY:-false}" = 'true' ] ||
+                           [ "${E2E_TRAIN_ONLY:-false}" = 'true' ]; then
                             set -- "$@" -f charts/sentinel/values-e2e.yaml
                         fi
 
@@ -1430,7 +1449,7 @@ PYCODE
 
         stage('Verify E2E Validation Isolation') {
             when {
-                expression { params.E2E_VALIDATION_ONLY == true }
+                expression { params.E2E_VALIDATION_ONLY == true || params.E2E_TRAIN_ONLY == true }
             }
             steps {
                 container('python') {
@@ -1586,10 +1605,15 @@ PYCODE
                             cat .retraining-cutoff
                         )"
 
+                        set -- -f charts/sentinel/values-dev.yaml
+                        if [ "${E2E_TRAIN_ONLY:-false}" = 'true' ]; then
+                            set -- "$@" -f charts/sentinel/values-e2e.yaml
+                        fi
+
                         helm template sentinel \
                           charts/sentinel \
                           --namespace sentinel-dev \
-                          -f charts/sentinel/values-dev.yaml \
+                          "$@" \
                           --set retraining.enabled=true \
                           --set retraining.validation.enabled=false \
                           --set retraining.train.enabled=true \
@@ -1631,6 +1655,80 @@ PYCODE
 
                         echo "Using retraining image: $TRAIN_IMAGE"
                         echo "Retraining Train Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+        stage('Verify E2E Training Isolation') {
+            when {
+                expression { params.E2E_TRAIN_ONLY == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import os
+import yaml
+
+configs = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
+retraining = configs['retraining']
+assert retraining['pipelineName'] == 'sentinel-retraining-e2e'
+assert retraining['database'] == {
+    'configMapName': 'sentinel-retraining-e2e-db',
+    'credentialsSecretName': 'sentinel-retraining-e2e-db-credentials',
+}
+assert retraining['canaryPromotion']['enabled'] is False
+
+jobs = [d for d in yaml.safe_load_all(
+    Path('retraining-train-job.yaml').read_text()
+) if d is not None]
+assert len(jobs) == 1, 'Expected one isolated Train Job'
+job = jobs[0]
+assert job['apiVersion'] == 'batch/v1' and job['kind'] == 'Job'
+assert job['metadata']['name'] == f"sentinel-retraining-train-{os.environ['BUILD_NUMBER']}"
+pod = job['spec']['template']['spec']
+assert pod.get('automountServiceAccountToken') is False
+assert pod['restartPolicy'] == 'Never'
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+assert container['name'] == 'retraining-train'
+assert 'envFrom' not in container
+worker_tag = Path('.retraining-worker-tag').read_text().strip()
+assert worker_tag.isdigit(), 'Invalid immutable image tag'
+assert container['image'] == f"{container['image'].rsplit(':', 1)[0]}:{worker_tag}"
+assert container['image'].rsplit(':', 1)[0], 'Training image repository is empty'
+
+variables = {entry['name']: entry for entry in container['env']}
+for name in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
+    assert variables[name]['valueFrom']['configMapKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db', 'key': name,
+    }, f'Unsafe E2E train ConfigMap for {name}'
+for name in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
+    assert variables[name]['valueFrom']['secretKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db-credentials', 'key': name,
+    }, f'Unsafe E2E train Secret for {name}'
+assert variables['RETRAINING_CUTOFF']['value'] == Path('.retraining-cutoff').read_text().strip()
+assert variables['RETRAINING_EXPERIMENT_NAME']['value'] == f"retraining-{os.environ['BUILD_NUMBER']}"
+for name in ('CLEARML_API_HOST', 'CLEARML_FILES_HOST', 'CLEARML_WEB_HOST'):
+    assert variables[name]['value'].strip(), f'Missing {name}'
+print('PASS: E2E Train Job database, image and experiment isolation validated')
+PYCODE
+                    '''
+                }
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        NAMESPACE=sentinel-dev
+                        test "$(kubectl get configmap sentinel-retraining-e2e-db \
+                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_DB}')" = sentinel_e2e
+                        test "$(kubectl get secret sentinel-retraining-e2e-db-credentials \
+                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)" = sentinel_e2e_user
+                        test "$(kubectl get configmap sentinel-retraining-e2e-db \
+                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_HOST}')" = \
+                          postgres-0.postgres-headless.sentinel-dev.svc.cluster.local
                     '''
                 }
             }
@@ -1762,10 +1860,20 @@ PYCODE
                     artifacts: '.candidate-model-id',
                     fingerprint: true
                 )
+                script {
+                    if (params.E2E_TRAIN_ONLY == true) {
+                        echo 'E2E training produced a candidate model. Gatekeeper, Canary, Git and checkpoint are disabled.'
+                        currentBuild.result = 'ABORTED'
+                        error('E2E_TRAIN_ONLY finished intentionally after Candidate Model resolution.')
+                    }
+                }
             }
         }
 
         stage('Render Gatekeeper Job') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 container('helm') {
                     sh '''
@@ -1866,6 +1974,9 @@ PYCODE
         }
 
         stage('Run Gatekeeper') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 script {
                     def gatekeeperStatus
@@ -2017,6 +2128,9 @@ PYCODE
         }
 
         stage('Resolve Current Canary Reference') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 container('python') {
                     sh '''
@@ -2047,6 +2161,9 @@ PYCODE
         }
 
         stage('Preflight Git Synchronization') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 container('git') {
                     withCredentials([
@@ -2126,6 +2243,9 @@ ASKPASS
         }
 
         stage('Render Canary Promotion Job') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 container('helm') {
                     sh '''
@@ -2189,6 +2309,9 @@ ASKPASS
         }
 
         stage('Run Canary Promotion') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 script {
                     def promotionStatus
@@ -2264,6 +2387,9 @@ ASKPASS
         }
 
         stage('Update Canary Reference in Git') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 container('python') {
                     sh '''
@@ -2346,6 +2472,9 @@ ASKPASS
         }
 
         stage('Render Checkpoint Job') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 container('kubectl') {
                     sh '''
@@ -2430,6 +2559,9 @@ ASKPASS
         }
 
         stage('Update Checkpoint') {
+            when {
+                expression { params.E2E_TRAIN_ONLY != true }
+            }
             steps {
                 script {
                     def checkpointStatus
