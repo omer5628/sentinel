@@ -1,0 +1,217 @@
+
+{{- $seed := .Values.retraining.e2eTrainingSeed | default dict -}}
+{{- if ($seed.enabled | default false) }}
+
+{{- if ne .Release.Namespace "sentinel-dev" }}
+{{- fail "E2E training seed is allowed only in sentinel-dev" }}
+{{- end }}
+
+{{- if ne .Values.retraining.pipelineName "sentinel-retraining-e2e" }}
+{{- fail "E2E training seed requires the isolated pipeline" }}
+{{- end }}
+
+{{- if ne .Values.retraining.database.configMapName "sentinel-retraining-e2e-db" }}
+{{- fail "E2E training seed requires the isolated database ConfigMap" }}
+{{- end }}
+
+{{- if ne .Values.retraining.database.credentialsSecretName "sentinel-retraining-e2e-db-credentials" }}
+{{- fail "E2E training seed requires isolated database credentials" }}
+{{- end }}
+
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: sentinel-e2e-training-seed
+  labels:
+    app.kubernetes.io/name: sentinel-e2e-training-seed
+    app.kubernetes.io/component: retraining-e2e-test
+    app.kubernetes.io/part-of: sentinel
+
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sentinel-e2e-training-seed
+
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+
+      containers:
+        - name: postgres-training-seed
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+
+          env:
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-retraining-e2e-db
+                  key: POSTGRES_HOST
+
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-retraining-e2e-db
+                  key: POSTGRES_PORT
+
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: sentinel-retraining-e2e-db
+                  key: POSTGRES_DB
+
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-retraining-e2e-db-credentials
+                  key: POSTGRES_USER
+
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-retraining-e2e-db-credentials
+                  key: POSTGRES_PASSWORD
+
+          command:
+            - sh
+            - -c
+
+          args:
+            - |
+              set -eu
+
+              if [ "$K8S_NAMESPACE" != "sentinel-dev" ] ||
+                 [ "$POSTGRES_DB" != "sentinel_e2e" ] ||
+                 [ "$POSTGRES_USER" != "sentinel_e2e_user" ]; then
+                  echo "ERROR: Invalid E2E training seed target." >&2
+                  exit 1
+              fi
+
+              export PGPASSWORD="$POSTGRES_PASSWORD"
+
+              psql -X -v ON_ERROR_STOP=1 \
+                -h "$POSTGRES_HOST" \
+                -p "$POSTGRES_PORT" \
+                -U "$POSTGRES_USER" \
+                -d "$POSTGRES_DB" <<'SQL'
+
+              BEGIN;
+
+              DO $e2e_identity$
+              BEGIN
+                  IF current_database() <> 'sentinel_e2e'
+                     OR current_user <> 'sentinel_e2e_user'
+                  THEN
+                      RAISE EXCEPTION
+                          'E2E training seed identity verification failed';
+                  END IF;
+              END;
+              $e2e_identity$;
+
+              -- Build ten deterministic, synthetic 28x28 image tensors.
+              -- JSON shape: [batch=1][channel=1][height=28][width=28].
+              -- Pixel values are normalized to the range [0, 1].
+
+              WITH pixel_rows AS (
+                  SELECT
+                      label_id,
+                      y,
+                      jsonb_agg(
+                          CASE
+                              WHEN (x + label_id * 3 + y) % 13 < 3
+                              THEN 1.0
+                              ELSE 0.0
+                          END
+                          ORDER BY x
+                      ) AS pixel_row
+                  FROM generate_series(0, 9) AS labels(label_id)
+                  CROSS JOIN generate_series(0, 27) AS ys(y)
+                  CROSS JOIN generate_series(0, 27) AS xs(x)
+                  GROUP BY label_id, y
+              ),
+              class_vectors AS (
+                  SELECT
+                      label_id,
+                      jsonb_build_array(
+                          jsonb_build_array(
+                              jsonb_agg(pixel_row ORDER BY y)
+                          )
+                      ) AS vector
+                  FROM pixel_rows
+                  GROUP BY label_id
+              )
+              INSERT INTO feature_log (
+                  event_id,
+                  image_id,
+                  timestamp,
+                  raw_image,
+                  vector,
+                  label,
+                  labeled_at,
+                  model_version
+              )
+              SELECT
+                  md5('sentinel-e2e-training-fixture-' || samples.n)::uuid,
+                  'e2e-train-' || lpad(samples.n::text, 4, '0'),
+                  CURRENT_TIMESTAMP - INTERVAL '2 minutes',
+                  NULL,
+                  class_vectors.vector,
+                  class_vectors.label_id::text,
+                  CURRENT_TIMESTAMP - INTERVAL '1 minute',
+                  'e2e_training'
+              FROM generate_series(1, 1000) AS samples(n)
+              JOIN class_vectors
+                ON class_vectors.label_id = (samples.n - 1) % 10
+              ON CONFLICT (event_id) DO NOTHING;
+
+              -- Verify exactly 1000 expected training fixtures exist.
+
+              DO $e2e_count$
+              DECLARE
+                  fixture_count INTEGER;
+              BEGIN
+                  SELECT COUNT(*)
+                  INTO fixture_count
+                  FROM feature_log AS f
+                  JOIN generate_series(1, 1000) AS samples(n)
+                    ON f.event_id =
+                       md5('sentinel-e2e-training-fixture-' || samples.n)::uuid
+                   AND f.image_id =
+                       'e2e-train-' || lpad(samples.n::text, 4, '0')
+                  WHERE f.model_version = 'e2e_training'
+                    AND f.label = ((samples.n - 1) % 10)::text
+                    AND f.vector IS NOT NULL
+                    AND jsonb_typeof(f.vector) = 'array'
+                    AND f.raw_image IS NULL
+                    AND f.labeled_at IS NOT NULL
+                    AND f.timestamp <= f.labeled_at;
+
+                  IF fixture_count <> 1000 THEN
+                      RAISE EXCEPTION
+                          'Expected 1000 E2E training fixtures, found %',
+                          fixture_count;
+                  END IF;
+
+                  RAISE NOTICE
+                      'E2E training fixtures verified: %',
+                      fixture_count;
+              END;
+              $e2e_count$;
+
+              COMMIT;
+
+              SQL
+
+              echo "E2E training seed completed successfully."
+
+{{- end }}
