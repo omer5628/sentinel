@@ -157,6 +157,21 @@ spec:
             defaultValue: false,
             description: 'Run isolated E2E Seed, Fetch, Validation and MNIST Training; stop before Gatekeeper, Canary, Git and checkpoint.'
         )
+        booleanParam(
+            name: 'E2E_GATEKEEPER_ONLY',
+            defaultValue: false,
+            description: 'Compare two explicit immutable models in an isolated Gatekeeper Job; never train, promote Canary, change Git or checkpoint.'
+        )
+        string(
+            name: 'E2E_GATEKEEPER_CURRENT_MODEL_ID',
+            defaultValue: '',
+            description: 'Existing baseline ClearML model ID (32 lowercase hexadecimal characters). Read-only reference.'
+        )
+        string(
+            name: 'E2E_GATEKEEPER_CANDIDATE_MODEL_ID',
+            defaultValue: '',
+            description: 'Existing candidate ClearML model ID (32 lowercase hexadecimal characters). Read-only reference.'
+        )
     }
 
     stages {
@@ -204,6 +219,16 @@ spec:
                     if (params.GIT_PREFLIGHT_ONLY == true &&
                         params.E2E_FETCH_ONLY == true) {
                         error('GIT_PREFLIGHT_ONLY and E2E_FETCH_ONLY cannot run together.')
+                    }
+                    if (params.E2E_GATEKEEPER_ONLY == true &&
+                        (params.GIT_PREFLIGHT_ONLY == true ||
+                         params.E2E_FETCH_ONLY == true ||
+                         params.E2E_SEED_DATA == true ||
+                         params.E2E_CLEANUP_ONLY == true ||
+                         params.E2E_VALIDATION_ONLY == true ||
+                         params.E2E_TRAINING_CLEANUP_ONLY == true ||
+                         params.E2E_TRAIN_ONLY == true)) {
+                        error('E2E_GATEKEEPER_ONLY must be the only enabled pipeline mode.')
                     }
                 }
             }
@@ -574,6 +599,151 @@ PYCODE
                     }
                     currentBuild.result = 'ABORTED'
                     error('E2E_TRAINING_CLEANUP_ONLY completed intentionally before retraining.')
+                }
+            }
+        }
+
+        stage('E2E Gatekeeper Only') {
+            when {
+                expression { params.E2E_GATEKEEPER_ONLY == true }
+            }
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        WORKER_IMAGE="$(kubectl get deployment sentinel-worker \
+                          --namespace sentinel-dev \
+                          -o jsonpath='{.spec.template.spec.containers[0].image}')"
+                        WORKER_TAG="${WORKER_IMAGE##*:}"
+                        case "$WORKER_TAG" in
+                            ''|*[!0-9]*) echo 'Invalid immutable worker image tag.' >&2; exit 1 ;;
+                        esac
+                        printf '%s\n' "$WORKER_TAG" > .e2e-gatekeeper-worker-tag
+'''
+                }
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        # Explicit immutable model references: never read or modify production values.
+                        CURRENT_MODEL_ID="${E2E_GATEKEEPER_CURRENT_MODEL_ID:-}"
+                        CANDIDATE_MODEL_ID="${E2E_GATEKEEPER_CANDIDATE_MODEL_ID:-}"
+                        for MODEL_ID in "$CURRENT_MODEL_ID" "$CANDIDATE_MODEL_ID"; do
+                            if ! printf '%s\n' "$MODEL_ID" | grep -Eq '^[0-9a-f]{32}$'; then
+                                echo 'E2E Gatekeeper requires two valid 32-character ClearML model IDs.' >&2
+                                exit 1
+                            fi
+                        done
+                        if [ "$CURRENT_MODEL_ID" = "$CANDIDATE_MODEL_ID" ]; then
+                            echo 'Baseline and candidate models must differ.' >&2
+                            exit 1
+                        fi
+
+                        WORKER_TAG="$(cat .e2e-gatekeeper-worker-tag)"
+
+                        # Gatekeeper requires only ClearML read access; values-e2e disables Canary.
+                        helm template sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          -f charts/sentinel/values-e2e.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.validation.enabled=false \
+                          --set retraining.train.enabled=false \
+                          --set retraining.gatekeeper.enabled=true \
+                          --set retraining.canaryPromotion.enabled=false \
+                          --set-string "retraining.runId=${BUILD_NUMBER}" \
+                          --set-string "retraining.gatekeeper.currentModelReference=${CURRENT_MODEL_ID}" \
+                          --set-string "retraining.gatekeeper.candidateModelReference=${CANDIDATE_MODEL_ID}" \
+                          --set-string "retraining.gatekeeper.image.tag=${WORKER_TAG}" \
+                          --show-only templates/retraining-gatekeeper-job.yaml \
+                          > retraining-gatekeeper-job.yaml
+                        test -s retraining-gatekeeper-job.yaml
+                        grep -F "sentinel-retraining-gatekeeper-${BUILD_NUMBER}" \
+                          retraining-gatekeeper-job.yaml >/dev/null
+                        grep -F "\"${CURRENT_MODEL_ID}\"" retraining-gatekeeper-job.yaml >/dev/null
+                        grep -F "\"${CANDIDATE_MODEL_ID}\"" retraining-gatekeeper-job.yaml >/dev/null
+                        grep -F 'sentinel.gatekeeper.compare' retraining-gatekeeper-job.yaml >/dev/null
+                        grep -F 'automountServiceAccountToken: false' \
+                          retraining-gatekeeper-job.yaml >/dev/null
+                        grep -F 'sentinel-gatekeeper' retraining-gatekeeper-job.yaml >/dev/null
+                        echo 'PASS: E2E Gatekeeper Job rendered with explicit model references.'
+'''
+                }
+                script {
+                    def gatekeeperExitStatus
+                    container('kubectl') {
+                        gatekeeperExitStatus = sh(
+                            script: '''
+                                set -eu
+                                JOB_NAME="sentinel-retraining-gatekeeper-${BUILD_NUMBER}"
+                                CURRENT_MODEL_ID="${E2E_GATEKEEPER_CURRENT_MODEL_ID}"
+                                CANDIDATE_MODEL_ID="${E2E_GATEKEEPER_CANDIDATE_MODEL_ID}"
+
+                                if kubectl get job "$JOB_NAME" -n sentinel-dev >/dev/null 2>&1; then
+                                    echo 'E2E Gatekeeper Job already exists; refusing to reuse it.' >&2
+                                    exit 1
+                                fi
+                                kubectl create --namespace sentinel-dev -f retraining-gatekeeper-job.yaml
+
+                                FINISHED=''
+                                for _ in $(seq 1 120); do
+                                    SUCCEEDED="$(kubectl get job "$JOB_NAME" --namespace sentinel-dev \
+                                      -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+                                    FAILED="$(kubectl get job "$JOB_NAME" --namespace sentinel-dev \
+                                      -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+                                    if [ "$SUCCEEDED" = 1 ]; then FINISHED=complete; break; fi
+                                    case "$FAILED" in ''|0) ;; *) FINISHED=failed; break ;; esac
+                                    sleep 5
+                                done
+
+                                kubectl logs --namespace sentinel-dev "job/$JOB_NAME" \
+                                  --all-containers=true > retraining-gatekeeper.log 2>&1 || true
+                                cat retraining-gatekeeper.log
+                                test -n "$FINISHED" || {
+                                    echo 'E2E Gatekeeper timed out.' >&2
+                                    kubectl describe job "$JOB_NAME" -n sentinel-dev || true
+                                    exit 1
+                                }
+
+                                STATUS="$(sed -n 's/^gatekeeper_status=//p' retraining-gatekeeper.log | tail -n 1)"
+                                ACTION="$(sed -n 's/^gatekeeper_action=//p' retraining-gatekeeper.log | tail -n 1)"
+                                CURRENT="$(sed -n 's/^current_model_reference=//p' retraining-gatekeeper.log | tail -n 1)"
+                                CANDIDATE="$(sed -n 's/^candidate_model_reference=//p' retraining-gatekeeper.log | tail -n 1)"
+                                test "$CURRENT" = "$CURRENT_MODEL_ID" || {
+                                    echo 'E2E Gatekeeper used unexpected baseline model.' >&2; exit 1;
+                                }
+                                test "$CANDIDATE" = "$CANDIDATE_MODEL_ID" || {
+                                    echo 'E2E Gatekeeper used unexpected candidate model.' >&2; exit 1;
+                                }
+
+                                case "$FINISHED:$STATUS:$ACTION" in
+                                    complete:passed:PROMOTE)
+                                        echo 'PASS: Gatekeeper accepted candidate (decision only; no promotion).'
+                                        ;;
+                                    failed:failed:REJECT)
+                                        echo 'PASS: Gatekeeper correctly rejected candidate (decision only).'
+                                        ;;
+                                    *)
+                                        echo "E2E Gatekeeper error: ${FINISHED}:${STATUS}:${ACTION}" >&2
+                                        kubectl describe job "$JOB_NAME" -n sentinel-dev || true
+                                        exit 1
+                                        ;;
+                                esac
+''',
+                            returnStatus: true
+                        )
+                    }
+                    archiveArtifacts(
+                        artifacts: 'retraining-gatekeeper.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+                    if (gatekeeperExitStatus != 0) {
+                        error('E2E Gatekeeper evaluation failed. Inspect retraining-gatekeeper.log.')
+                    }
+                    echo('E2E Gatekeeper verified. No Seed, Training, Canary, Git or checkpoint ran.')
+                    currentBuild.result = 'ABORTED'
+                    error('E2E_GATEKEEPER_ONLY completed intentionally after the comparison.')
                 }
             }
         }
