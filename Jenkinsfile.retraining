@@ -168,6 +168,16 @@ spec:
             description: 'Existing baseline ClearML model ID (32 lowercase hexadecimal characters). Read-only reference.'
         )
         string(
+            name: 'E2E_GATEKEEPER_IMAGE_TAG',
+            defaultValue: '',
+            description: 'Immutable sentinel-train image tag for E2E Gatekeeper; required for e2e_pass. Do not use latest.'
+        )
+        choice(
+            name: 'E2E_GATEKEEPER_PROFILE',
+            choices: ['default', 'e2e_pass'],
+            description: 'default preserves the strict policy; e2e_pass accepts equal model scores for testing only.'
+        )
+        string(
             name: 'E2E_GATEKEEPER_CANDIDATE_MODEL_ID',
             defaultValue: '',
             description: 'Existing candidate ClearML model ID (32 lowercase hexadecimal characters). Read-only reference.'
@@ -219,6 +229,18 @@ spec:
                     if (params.GIT_PREFLIGHT_ONLY == true &&
                         params.E2E_FETCH_ONLY == true) {
                         error('GIT_PREFLIGHT_ONLY and E2E_FETCH_ONLY cannot run together.')
+                    }
+                    if (params.E2E_GATEKEEPER_ONLY == true) {
+                        if (!(params.E2E_GATEKEEPER_PROFILE in ['default', 'e2e_pass'])) {
+                            error('Unsupported E2E Gatekeeper profile.')
+                        }
+                        def tag = (params.E2E_GATEKEEPER_IMAGE_TAG ?: '').trim()
+                        if (tag && !(tag ==~ /^[0-9]+$/)) {
+                            error('E2E Gatekeeper image tag must be numeric and immutable.')
+                        }
+                        if (params.E2E_GATEKEEPER_PROFILE == 'e2e_pass' && !tag) {
+                            error('e2e_pass requires a new E2E_GATEKEEPER_IMAGE_TAG with the updated code.')
+                        }
                     }
                     if (params.E2E_GATEKEEPER_ONLY == true &&
                         (params.GIT_PREFLIGHT_ONLY == true ||
@@ -615,8 +637,13 @@ PYCODE
                           --namespace sentinel-dev \
                           -o jsonpath='{.spec.template.spec.containers[0].image}')"
                         WORKER_TAG="${WORKER_IMAGE##*:}"
+                        # An explicit E2E image tag overrides the deployed worker tag.
+                        # The updated image is built by E2E_BUILD_TRAIN_ONLY.
+                        if [ -n "${E2E_GATEKEEPER_IMAGE_TAG:-}" ]; then
+                            WORKER_TAG="$E2E_GATEKEEPER_IMAGE_TAG"
+                        fi
                         case "$WORKER_TAG" in
-                            ''|*[!0-9]*) echo 'Invalid immutable worker image tag.' >&2; exit 1 ;;
+                            ''|*[!0-9]*) echo 'Invalid immutable gatekeeper image tag.' >&2; exit 1 ;;
                         esac
                         printf '%s\n' "$WORKER_TAG" > .e2e-gatekeeper-worker-tag
 '''
@@ -640,6 +667,23 @@ PYCODE
                         fi
 
                         WORKER_TAG="$(cat .e2e-gatekeeper-worker-tag)"
+                        POLICY_PROFILE="${E2E_GATEKEEPER_PROFILE:-default}"
+                        case "$POLICY_PROFILE" in
+                            default)
+                                set --
+                                ;;
+                            e2e_pass)
+                                test -n "${E2E_GATEKEEPER_IMAGE_TAG:-}" || {
+                                    echo 'e2e_pass needs the updated immutable train image.' >&2
+                                    exit 1
+                                }
+                                set -- --set-string retraining.gatekeeper.e2eProfile=e2e_pass
+                                ;;
+                            *)
+                                echo 'Unsupported Gatekeeper E2E policy profile.' >&2
+                                exit 1
+                                ;;
+                        esac
 
                         # Gatekeeper requires only ClearML read access; values-e2e disables Canary.
                         helm template sentinel charts/sentinel \
@@ -655,6 +699,7 @@ PYCODE
                           --set-string "retraining.gatekeeper.currentModelReference=${CURRENT_MODEL_ID}" \
                           --set-string "retraining.gatekeeper.candidateModelReference=${CANDIDATE_MODEL_ID}" \
                           --set-string "retraining.gatekeeper.image.tag=${WORKER_TAG}" \
+                          "$@" \
                           --show-only templates/retraining-gatekeeper-job.yaml \
                           > retraining-gatekeeper-job.yaml
                         test -s retraining-gatekeeper-job.yaml
@@ -666,6 +711,11 @@ PYCODE
                         grep -F 'automountServiceAccountToken: false' \
                           retraining-gatekeeper-job.yaml >/dev/null
                         grep -F 'name: retraining-gatekeeper' retraining-gatekeeper-job.yaml >/dev/null
+                        if [ "$POLICY_PROFILE" = 'e2e_pass' ]; then
+                            grep -F 'name: SENTINEL_GATEKEEPER_PROFILE' retraining-gatekeeper-job.yaml >/dev/null
+                            grep -F 'value: "e2e_pass"' retraining-gatekeeper-job.yaml >/dev/null
+                            grep -F 'name: SENTINEL_E2E_ONLY' retraining-gatekeeper-job.yaml >/dev/null
+                        fi
                         echo 'PASS: E2E Gatekeeper Job rendered with explicit model references.'
 '''
                 }

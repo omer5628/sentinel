@@ -1,6 +1,7 @@
 import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
+import os
 from pathlib import Path
 
 from hydra import compose, initialize_config_dir
@@ -84,7 +85,7 @@ def run_gatekeeper(
         _normalize_model_reference(
             candidate_model_reference,
             "Candidate model reference",
-        )
+    )
     )
 
     if current_reference == candidate_reference:
@@ -133,7 +134,7 @@ def run_gatekeeper(
         artifact_resolver.resolve(
             candidate_reference
         )
-    )
+        )
 
     model_adapter = load_model_adapter(
         gatekeeper_config
@@ -174,7 +175,7 @@ def run_gatekeeper(
 
 
 def _load_hydra_config() -> DictConfig:
-    """Compose the project Hydra configuration."""
+    """Compose the default or an explicitly gated E2E configuration."""
 
     config_dir = (
         Path(__file__)
@@ -190,6 +191,23 @@ def _load_hydra_config() -> DictConfig:
             f"{config_dir}"
         )
 
+    profile = os.getenv(
+        "SENTINEL_GATEKEEPER_PROFILE", ""
+    ).strip()
+
+    overrides: list[str] = []
+    if profile:
+        if profile != "e2e_pass":
+            raise ValueError(
+                "Unsupported Gatekeeper profile."
+            )
+        if os.getenv("SENTINEL_E2E_ONLY") != "true":
+            raise RuntimeError(
+                "E2E Gatekeeper profile requires isolated E2E mode."
+            )
+
+        overrides.append("gatekeeper=e2e_pass")
+
     with initialize_config_dir(
         version_base=None,
         config_dir=str(
@@ -198,6 +216,7 @@ def _load_hydra_config() -> DictConfig:
     ):
         cfg = compose(
             config_name="config",
+            overrides=overrides,
         )
 
     return cfg

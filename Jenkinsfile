@@ -124,6 +124,11 @@ spec:
 
     parameters {
         booleanParam(
+            name: 'E2E_BUILD_TRAIN_ONLY',
+            defaultValue: false,
+            description: 'Build, scan and publish the immutable sentinel-train image only. Never deploy Dev or Production.'
+        )
+        booleanParam(
             name: 'DEPLOY_CLEARML_SERVING_E2E',
             defaultValue: false,
             description: 'Deploy isolated ClearML Serving E2E to sentinel-dev (not Production).'
@@ -141,6 +146,63 @@ spec:
     }
 
     stages {
+        stage('E2E Build Train Image Only') {
+            when {
+                expression { params.E2E_BUILD_TRAIN_ONLY == true }
+            }
+            steps {
+                container('buildkit') {
+                    sh '''
+                        set -eu
+                        rm -f sentinel-train.tar
+                        buildctl-daemonless.sh build \
+                          --frontend dockerfile.v0 \
+                          --local context=. \
+                          --local dockerfile=. \
+                          --opt filename=Dockerfile.train \
+                          --output type=docker,name=omer5628/sentinel-train:${BUILD_NUMBER},dest=sentinel-train.tar
+                        test -s sentinel-train.tar
+                    '''
+                }
+                container('trivy') {
+                    sh '''
+                        set -eu
+                        trivy image \
+                          --input sentinel-train.tar \
+                          --scanners vuln \
+                          --severity CRITICAL \
+                          --exit-code 1 \
+                          --ignorefile .trivyignore.yaml
+                    '''
+                }
+                container('skopeo') {
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'dockerhub-credentials',
+                            usernameVariable: 'DOCKERHUB_USER',
+                            passwordVariable: 'DOCKERHUB_TOKEN'
+                        )
+                    ]) {
+                        sh '''
+                            set -eu
+                            echo "$DOCKERHUB_TOKEN" | skopeo login \
+                              --username "$DOCKERHUB_USER" \
+                              --password-stdin docker.io
+                            skopeo copy \
+                              docker-archive:sentinel-train.tar \
+                              docker://docker.io/omer5628/sentinel-train:${BUILD_NUMBER}
+                            echo "E2E train image published: omer5628/sentinel-train:${BUILD_NUMBER}"
+                        '''
+                    }
+                }
+                script {
+                    echo("E2E_BUILD_TRAIN_ONLY completed. No Kubernetes deployment or Production promotion ran.")
+                    currentBuild.result = 'ABORTED'
+                    error('E2E_BUILD_TRAIN_ONLY completed intentionally after image publish.')
+                }
+            }
+        }
+
         stage('Test') {
             steps {
                 sh 'uv sync --frozen --group validation'
