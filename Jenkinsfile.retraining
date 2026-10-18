@@ -142,6 +142,16 @@ spec:
             defaultValue: false,
             description: 'Delete only the 1000 synthetic E2E Data Gate fixtures in sentinel_e2e, then stop.'
         )
+        booleanParam(
+            name: 'E2E_VALIDATION_ONLY',
+            defaultValue: false,
+            description: 'Seed valid synthetic MNIST tensors, run E2E Fetch and Validation, then stop before training.'
+        )
+        booleanParam(
+            name: 'E2E_TRAINING_CLEANUP_ONLY',
+            defaultValue: false,
+            description: 'Delete only the isolated synthetic E2E training fixtures, then stop.'
+        )
     }
 
     stages {
@@ -157,6 +167,26 @@ spec:
                     if (params.E2E_SEED_DATA == true &&
                         (params.E2E_FETCH_ONLY != true || params.GIT_PREFLIGHT_ONLY == true)) {
                         error('E2E_SEED_DATA requires E2E_FETCH_ONLY=true and GIT_PREFLIGHT_ONLY=false.')
+                    }
+                    if (params.E2E_VALIDATION_ONLY == true &&
+                        (params.E2E_FETCH_ONLY == true ||
+                         params.E2E_SEED_DATA == true ||
+                         params.E2E_CLEANUP_ONLY == true ||
+                         params.E2E_TRAINING_CLEANUP_ONLY == true ||
+                         params.GIT_PREFLIGHT_ONLY == true)) {
+                        error('E2E_VALIDATION_ONLY must be the only enabled pipeline mode.')
+                    }
+                    if (params.E2E_TRAINING_CLEANUP_ONLY == true &&
+                        (params.E2E_FETCH_ONLY == true ||
+                         params.E2E_SEED_DATA == true ||
+                         params.E2E_CLEANUP_ONLY == true ||
+                         params.E2E_VALIDATION_ONLY == true ||
+                         params.GIT_PREFLIGHT_ONLY == true)) {
+                        error('E2E_TRAINING_CLEANUP_ONLY must be the only enabled pipeline mode.')
+                    }
+                    if (params.GIT_PREFLIGHT_ONLY == true &&
+                        params.E2E_FETCH_ONLY == true) {
+                        error('GIT_PREFLIGHT_ONLY and E2E_FETCH_ONLY cannot run together.')
                     }
                 }
             }
@@ -394,9 +424,146 @@ PYCODE
             }
         }
 
+
+        stage('Cleanup E2E Training Fixtures Only') {
+            when {
+                expression { params.E2E_TRAINING_CLEANUP_ONLY == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import yaml
+
+config = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
+r = config['retraining']
+assert r['pipelineName'] == 'sentinel-retraining-e2e'
+assert r['database'] == {
+    'configMapName': 'sentinel-retraining-e2e-db',
+    'credentialsSecretName': 'sentinel-retraining-e2e-db-credentials',
+}
+assert r['databaseBootstrap']['databaseName'] == 'sentinel_e2e'
+assert r['canaryPromotion']['enabled'] is False
+print('PASS: E2E training cleanup configuration preflight')
+PYCODE
+                    '''
+                }
+                container('helm') {
+                    sh '''
+                        set -eu
+                        helm template sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          -f charts/sentinel/values-e2e.yaml \
+                          --set retraining.e2eTrainingCleanup.enabled=true \
+                          --show-only templates/retraining-e2e-training-cleanup-job.yaml \
+                          > retraining-e2e-training-cleanup-job.yaml
+                        test -s retraining-e2e-training-cleanup-job.yaml
+                    '''
+                }
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import yaml
+
+docs = [d for d in yaml.safe_load_all(
+    Path('retraining-e2e-training-cleanup-job.yaml').read_text()
+) if d is not None]
+assert len(docs) == 1
+job = docs[0]
+assert job['apiVersion'] == 'batch/v1' and job['kind'] == 'Job'
+assert job['metadata']['name'] == 'sentinel-e2e-training-cleanup'
+pod = job['spec']['template']['spec']
+assert pod['automountServiceAccountToken'] is False
+assert pod['restartPolicy'] == 'Never'
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+assert container['name'] == 'postgres-training-cleanup'
+envs = {e['name']: e for e in container['env']}
+assert envs['K8S_NAMESPACE']['valueFrom']['fieldRef']['fieldPath'] == 'metadata.namespace'
+for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
+    assert envs[key]['valueFrom']['configMapKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db', 'key': key,
+    }
+for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
+    assert envs[key]['valueFrom']['secretKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db-credentials', 'key': key,
+    }
+script = ''.join(container['args'])
+for required in (
+    'sentinel-dev', 'sentinel_e2e', 'sentinel_e2e_user',
+    'current_database()', 'current_user', 'DELETE FROM feature_log',
+    'e2e_training', 'md5(', 'deleted_count NOT IN (0, 1000)',
+    'remaining_count <> 0', 'COMMIT;',
+):
+    assert required in script, f'Missing E2E cleanup guard: {required}'
+print('PASS: E2E training cleanup isolation validated')
+PYCODE
+                    '''
+                }
+                script {
+                    def status
+                    container('kubectl') {
+                        status = sh(
+                            script: '''
+                                set -eu
+                                NAMESPACE=sentinel-dev
+                                JOB_NAME=sentinel-e2e-training-cleanup
+
+                                E2E_DB="$(kubectl get configmap sentinel-retraining-e2e-db \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_DB}')"
+                                test "$E2E_DB" = sentinel_e2e
+                                E2E_USER="$(kubectl get secret sentinel-retraining-e2e-db-credentials \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)"
+                                test "$E2E_USER" = sentinel_e2e_user
+                                E2E_HOST="$(kubectl get configmap sentinel-retraining-e2e-db \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_HOST}')"
+                                test "$E2E_HOST" = 'postgres-0.postgres-headless.sentinel-dev.svc.cluster.local'
+
+                                if kubectl get job "$JOB_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+                                    echo 'Training cleanup Job already exists; refusing reuse.' >&2
+                                    exit 1
+                                fi
+                                kubectl create -n "$NAMESPACE" -f retraining-e2e-training-cleanup-job.yaml
+                                touch .e2e-training-cleanup-job-created
+                                if ! kubectl wait -n "$NAMESPACE" \
+                                   --for=condition=complete "job/${JOB_NAME}" --timeout=5m; then
+                                    kubectl describe -n "$NAMESPACE" "job/${JOB_NAME}" || true
+                                    kubectl logs -n "$NAMESPACE" "job/${JOB_NAME}" \
+                                       --all-containers=true > retraining-e2e-training-cleanup.log 2>&1 || true
+                                    cat retraining-e2e-training-cleanup.log || true
+                                    exit 1
+                                fi
+                                kubectl logs -n "$NAMESPACE" "job/${JOB_NAME}" \
+                                    --all-containers=true > retraining-e2e-training-cleanup.log 2>&1
+                                cat retraining-e2e-training-cleanup.log
+                                grep -Fx 'E2E training cleanup completed successfully.' \
+                                    retraining-e2e-training-cleanup.log >/dev/null
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+                    archiveArtifacts(
+                        artifacts: 'retraining-e2e-training-cleanup.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+                    if (status != 0) {
+                        error('Isolated E2E training cleanup failed. Inspect logs.')
+                    }
+                    currentBuild.result = 'ABORTED'
+                    error('E2E_TRAINING_CLEANUP_ONLY completed intentionally before retraining.')
+                }
+            }
+        }
+
         stage('E2E Fetch Preflight') {
             when {
-                expression { params.E2E_FETCH_ONLY == true }
+                expression { params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true }
             }
             steps {
                 container('python') {
@@ -433,6 +600,121 @@ PYCODE
                           -n "$NAMESPACE" -o name > /dev/null
                         echo 'PASS: Isolated E2E database configuration is present.'
                     '''
+                }
+            }
+        }
+
+
+        stage('Seed E2E Training Fixtures') {
+            when {
+                expression { params.E2E_VALIDATION_ONLY == true }
+            }
+            steps {
+                container('helm') {
+                    sh '''
+                        set -eu
+                        helm template sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          -f charts/sentinel/values-e2e.yaml \
+                          --set retraining.e2eTrainingSeed.enabled=true \
+                          --show-only templates/retraining-e2e-training-seed-job.yaml \
+                          > retraining-e2e-training-seed-job.yaml
+                        test -s retraining-e2e-training-seed-job.yaml
+                    '''
+                }
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import yaml
+
+docs = [d for d in yaml.safe_load_all(
+    Path('retraining-e2e-training-seed-job.yaml').read_text()
+) if d is not None]
+assert len(docs) == 1
+job = docs[0]
+assert job['apiVersion'] == 'batch/v1' and job['kind'] == 'Job'
+assert job['metadata']['name'] == 'sentinel-e2e-training-seed'
+pod = job['spec']['template']['spec']
+assert pod['automountServiceAccountToken'] is False
+assert pod['restartPolicy'] == 'Never'
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+assert container['name'] == 'postgres-training-seed'
+envs = {e['name']: e for e in container['env']}
+assert envs['K8S_NAMESPACE']['valueFrom']['fieldRef']['fieldPath'] == 'metadata.namespace'
+for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
+    assert envs[key]['valueFrom']['configMapKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db', 'key': key,
+    }
+for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
+    assert envs[key]['valueFrom']['secretKeyRef'] == {
+        'name': 'sentinel-retraining-e2e-db-credentials', 'key': key,
+    }
+script = ''.join(container['args'])
+for required in (
+    'sentinel-dev', 'sentinel_e2e', 'sentinel_e2e_user',
+    'current_database()', 'current_user', 'generate_series(1, 1000)',
+    'e2e_training', 'ON CONFLICT (event_id) DO NOTHING',
+    'E2E training fixtures verified:', 'COMMIT;',
+):
+    assert required in script, f'Missing E2E seed guard: {required}'
+print('PASS: E2E training seed isolation validated')
+PYCODE
+                    '''
+                }
+                script {
+                    def status
+                    container('kubectl') {
+                        status = sh(
+                            script: '''
+                                set -eu
+                                NAMESPACE=sentinel-dev
+                                JOB_NAME=sentinel-e2e-training-seed
+                                E2E_DB="$(kubectl get configmap sentinel-retraining-e2e-db \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_DB}')"
+                                test "$E2E_DB" = sentinel_e2e
+                                E2E_USER="$(kubectl get secret sentinel-retraining-e2e-db-credentials \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)"
+                                test "$E2E_USER" = sentinel_e2e_user
+                                E2E_HOST="$(kubectl get configmap sentinel-retraining-e2e-db \
+                                  -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_HOST}')"
+                                test "$E2E_HOST" = 'postgres-0.postgres-headless.sentinel-dev.svc.cluster.local'
+
+                                if kubectl get job "$JOB_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+                                    echo 'Training seed Job already exists; refusing reuse.' >&2
+                                    exit 1
+                                fi
+                                kubectl create -n "$NAMESPACE" -f retraining-e2e-training-seed-job.yaml
+                                touch .e2e-training-seed-job-created
+                                if ! kubectl wait -n "$NAMESPACE" \
+                                   --for=condition=complete "job/${JOB_NAME}" --timeout=5m; then
+                                    kubectl describe -n "$NAMESPACE" "job/${JOB_NAME}" || true
+                                    kubectl logs -n "$NAMESPACE" "job/${JOB_NAME}" \
+                                       --all-containers=true > retraining-e2e-training-seed.log 2>&1 || true
+                                    cat retraining-e2e-training-seed.log || true
+                                    exit 1
+                                fi
+                                kubectl logs -n "$NAMESPACE" "job/${JOB_NAME}" \
+                                    --all-containers=true > retraining-e2e-training-seed.log 2>&1
+                                cat retraining-e2e-training-seed.log
+                                grep -F 'E2E training seed completed successfully.' \
+                                    retraining-e2e-training-seed.log >/dev/null
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+                    archiveArtifacts(
+                        artifacts: 'retraining-e2e-training-seed.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+                    if (status != 0) {
+                        error('Isolated E2E training seed failed. Fetch will not run.')
+                    }
+                    echo 'E2E training fixtures are ready for Fetch and Validation.'
                 }
             }
         }
@@ -567,8 +849,8 @@ PYCODE
         stage('Emergency Brake') {
             steps {
                 script {
-                    if (params.E2E_FETCH_ONLY == true) {
-                        echo 'Isolated E2E fetch-only mode: bypassing the live retraining brake.'
+                    if (params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true) {
+                        echo 'Isolated E2E verification mode: bypassing the live retraining brake.'
                         echo 'No retraining training, Canary promotion, Git update or checkpoint is permitted.'
                     } else {
                         def retrainingEnabled = sh(
@@ -604,7 +886,7 @@ PYCODE
 
         stage('Resolve Current Model') {
             when {
-                expression { params.E2E_FETCH_ONLY != true }
+                expression { params.E2E_FETCH_ONLY != true && params.E2E_VALIDATION_ONLY != true }
             }
             steps {
                 container('python') {
@@ -779,7 +1061,8 @@ PY
 
                         # Preserve the standard config unless E2E mode was explicitly requested.
                         set -- -f charts/sentinel/values-dev.yaml
-                        if [ "${E2E_FETCH_ONLY:-false}" = 'true' ]; then
+                        if [ "${E2E_FETCH_ONLY:-false}" = 'true' ] ||
+                           [ "${E2E_VALIDATION_ONLY:-false}" = 'true' ]; then
                             set -- "$@" -f charts/sentinel/values-e2e.yaml
                         fi
 
@@ -815,7 +1098,7 @@ PY
 
         stage('Verify E2E Fetch Isolation') {
             when {
-                expression { params.E2E_FETCH_ONLY == true }
+                expression { params.E2E_FETCH_ONLY == true || params.E2E_VALIDATION_ONLY == true }
             }
             steps {
                 container('python') {
@@ -1041,6 +1324,10 @@ PYCODE
                         "${newRows}/${minimumNewRows} new rows."
                     )
 
+                    if (params.E2E_VALIDATION_ONLY == true && gateStatus != 'passed') {
+                        error("E2E Validation requires passing Data Gate, got ${gateStatus} (${newRows}/${minimumNewRows}).")
+                    }
+
                     if (params.E2E_FETCH_ONLY == true) {
                         echo "E2E Fetch Data Gate: ${gateStatus} (${newRows}/${minimumNewRows} new rows)."
                         echo 'E2E fetch-only verification finished; no further stages will run.'
@@ -1086,10 +1373,15 @@ PYCODE
                             cat .retraining-cutoff
                         )"
 
+                        set -- -f charts/sentinel/values-dev.yaml
+                        if [ "${E2E_VALIDATION_ONLY:-false}" = 'true' ]; then
+                            set -- "$@" -f charts/sentinel/values-e2e.yaml
+                        fi
+
                         helm template sentinel \
                           charts/sentinel \
                           --namespace sentinel-dev \
-                          -f charts/sentinel/values-dev.yaml \
+                          "$@" \
                           --set retraining.enabled=true \
                           --set retraining.validation.enabled=true \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
@@ -1130,6 +1422,55 @@ PYCODE
 
                         echo "Using validator image: $VALIDATOR_IMAGE"
                         echo "Retraining Validation Job rendered successfully."
+                    '''
+                }
+            }
+        }
+
+
+        stage('Verify E2E Validation Isolation') {
+            when {
+                expression { params.E2E_VALIDATION_ONLY == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import os
+import yaml
+
+docs = [d for d in yaml.safe_load_all(
+    Path('retraining-validation-job.yaml').read_text()
+) if d is not None]
+assert len(docs) == 1
+job = docs[0]
+assert job['kind'] == 'Job'
+assert job['metadata']['name'] == f"sentinel-retraining-validation-{os.environ['BUILD_NUMBER']}"
+pod = job['spec']['template']['spec']
+assert pod.get('automountServiceAccountToken') is False
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+assert 'envFrom' not in container
+variables = {entry['name']: entry for entry in container['env']}
+for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
+    assert variables[key] == {
+        'name': key,
+        'valueFrom': {'configMapKeyRef': {
+            'name': 'sentinel-retraining-e2e-db', 'key': key
+        }}
+    }, f'Unsafe E2E Validation DB ConfigMap reference: {key}'
+for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
+    assert variables[key] == {
+        'name': key,
+        'valueFrom': {'secretKeyRef': {
+            'name': 'sentinel-retraining-e2e-db-credentials', 'key': key
+        }}
+    }, f'Unsafe E2E Validation credentials source: {key}'
+assert variables['RETRAINING_PIPELINE_NAME']['value'] == 'sentinel-retraining-e2e'
+print('PASS: E2E Validation Job isolation validated')
+PYCODE
                     '''
                 }
             }
@@ -1222,6 +1563,11 @@ PYCODE
                     echo(
                         'Retraining training-data validation passed.'
                     )
+                    if (params.E2E_VALIDATION_ONLY == true) {
+                        echo 'Isolated E2E Validation passed. No Training, Canary, Git or Checkpoint stages will run.'
+                        currentBuild.result = 'ABORTED'
+                        error('E2E_VALIDATION_ONLY completed intentionally before training.')
+                    }
                 }
             }
         }
@@ -2217,6 +2563,19 @@ ASKPASS
                           --wait=false || true
                     fi
 
+                    if [ -f .e2e-training-seed-job-created ]; then
+                        kubectl delete job sentinel-e2e-training-seed \
+                          --namespace sentinel-dev \
+                          --ignore-not-found=true \
+                          --wait=false || true
+                    fi
+                    if [ -f .e2e-training-cleanup-job-created ]; then
+                        kubectl delete job sentinel-e2e-training-cleanup \
+                          --namespace sentinel-dev \
+                          --ignore-not-found=true \
+                          --wait=false || true
+                    fi
+
                     kubectl delete job \
                       "sentinel-retraining-fetch-${BUILD_NUMBER}" \
                       --namespace sentinel-dev \
@@ -2290,6 +2649,12 @@ ASKPASS
                 rm -f retraining-e2e-data-cleanup-job.yaml
                 rm -f retraining-e2e-data-cleanup.log
                 rm -f .e2e-cleanup-job-created
+                rm -f retraining-e2e-training-seed-job.yaml
+                rm -f retraining-e2e-training-seed.log
+                rm -f .e2e-training-seed-job-created
+                rm -f retraining-e2e-training-cleanup-job.yaml
+                rm -f retraining-e2e-training-cleanup.log
+                rm -f .e2e-training-cleanup-job-created
             '''
         }
     }
