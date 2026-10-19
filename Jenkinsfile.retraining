@@ -583,7 +583,7 @@ for name, value in expected.items():
     assert variables[name]['value'] == value, f'Unsafe promotion configuration: {name}'
 for name in ('CLEARML_API_ACCESS_KEY', 'CLEARML_API_SECRET_KEY'):
     assert variables[name]['valueFrom']['secretKeyRef']['name'] == 'clearml-retraining-credentials'
-script = '\n'.join(container['args'])
+script = ''.join(container['args'])
 assert script.index('E2E Canary isolation preflight passed') < script.index('python scripts/register_serving_candidate.py')
 assert 'e2e_canary_promotion_status=routing_verified' in script
 print('PASS: E2E promotion isolation, pre-registration guard, and immutable image validated')
