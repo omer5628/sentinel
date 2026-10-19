@@ -182,6 +182,26 @@ spec:
             defaultValue: '',
             description: 'Existing candidate ClearML model ID (32 lowercase hexadecimal characters). Read-only reference.'
         )
+        booleanParam(
+            name: 'E2E_CANARY_BOOTSTRAP_ONLY',
+            defaultValue: false,
+            description: 'Initialize only the isolated ClearML Serving E2E Canary; no retraining, normal Canary, Git or checkpoint.'
+        )
+        string(
+            name: 'E2E_CANARY_BOOTSTRAP_BASE_MODEL_ID',
+            defaultValue: '',
+            description: 'ClearML model ID for isolated E2E base endpoint /1.'
+        )
+        string(
+            name: 'E2E_CANARY_BOOTSTRAP_PREVIOUS_MODEL_ID',
+            defaultValue: '',
+            description: 'ClearML model ID for isolated initial E2E Canary endpoint /2.'
+        )
+        string(
+            name: 'E2E_CANARY_BOOTSTRAP_IMAGE_TAG',
+            defaultValue: '',
+            description: 'Immutable sentinel-train image tag containing existing Serving registration and verification scripts.'
+        )
     }
 
     stages {
@@ -252,6 +272,162 @@ spec:
                          params.E2E_TRAIN_ONLY == true)) {
                         error('E2E_GATEKEEPER_ONLY must be the only enabled pipeline mode.')
                     }
+                    if (params.E2E_CANARY_BOOTSTRAP_ONLY == true) {
+                        if (params.GIT_PREFLIGHT_ONLY == true ||
+                            params.E2E_FETCH_ONLY == true ||
+                            params.E2E_SEED_DATA == true ||
+                            params.E2E_CLEANUP_ONLY == true ||
+                            params.E2E_VALIDATION_ONLY == true ||
+                            params.E2E_TRAINING_CLEANUP_ONLY == true ||
+                            params.E2E_TRAIN_ONLY == true ||
+                            params.E2E_GATEKEEPER_ONLY == true) {
+                            error('E2E_CANARY_BOOTSTRAP_ONLY must be the only enabled pipeline mode.')
+                        }
+                        def base = (params.E2E_CANARY_BOOTSTRAP_BASE_MODEL_ID ?: '').trim()
+                        def previous = (params.E2E_CANARY_BOOTSTRAP_PREVIOUS_MODEL_ID ?: '').trim()
+                        def tag = (params.E2E_CANARY_BOOTSTRAP_IMAGE_TAG ?: '').trim()
+                        if (!(base ==~ /^[0-9a-f]{32}$/) ||
+                            !(previous ==~ /^[0-9a-f]{32}$/) || base == previous) {
+                            error('E2E Canary bootstrap requires two distinct 32-character lowercase model IDs.')
+                        }
+                        if (!(tag ==~ /^[0-9]+$/)) {
+                            error('E2E Canary bootstrap requires an immutable numeric image tag.')
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Bootstrap Isolated E2E Canary Only') {
+            when {
+                expression { params.E2E_CANARY_BOOTSTRAP_ONLY == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import yaml
+
+config = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
+retraining = config['retraining']
+canary = retraining['canaryPromotion']
+assert retraining['pipelineName'] == 'sentinel-retraining-e2e'
+assert canary['enabled'] is False
+assert canary['servingTaskId'] == 'f80299ed1fb44353a347dafe47b7dd25', 'Unexpected E2E Task'
+assert canary['inferenceBaseUrl'] == (
+    'http://clearml-serving-e2e-inference.sentinel-dev.svc.cluster.local:8080'
+), 'Unexpected E2E inference URL'
+assert canary['servingConfig'] == 'conf/serving/mnist.yaml'
+print('PASS: Isolated E2E Serving Task and inference configuration validated')
+PYCODE
+                    '''
+                }
+                container('helm') {
+                    sh '''
+                        set -eu
+                        helm template sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          -f charts/sentinel/values-e2e.yaml \
+                          -f charts/sentinel/values-e2e-canary-bootstrap.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.validation.enabled=false \
+                          --set retraining.train.enabled=false \
+                          --set retraining.gatekeeper.enabled=false \
+                          --set retraining.canaryPromotion.enabled=false \
+                          --set retraining.checkpoint.enabled=false \
+                          --set retraining.e2eCanaryBootstrap.enabled=true \
+                          --set-string "retraining.runId=${BUILD_NUMBER}" \
+                          --set-string "retraining.e2eCanaryBootstrap.baseModelReference=${E2E_CANARY_BOOTSTRAP_BASE_MODEL_ID}" \
+                          --set-string "retraining.e2eCanaryBootstrap.previousModelReference=${E2E_CANARY_BOOTSTRAP_PREVIOUS_MODEL_ID}" \
+                          --set-string "retraining.canaryPromotion.image.tag=${E2E_CANARY_BOOTSTRAP_IMAGE_TAG}" \
+                          --show-only templates/retraining-e2e-canary-bootstrap-job.yaml \
+                          > retraining-e2e-canary-bootstrap-job.yaml
+                        test -s retraining-e2e-canary-bootstrap-job.yaml
+                        echo 'Isolated E2E Canary bootstrap Job rendered.'
+                    '''
+                }
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import os
+import yaml
+
+docs = [d for d in yaml.safe_load_all(
+    Path('retraining-e2e-canary-bootstrap-job.yaml').read_text()
+) if d is not None]
+assert len(docs) == 1, 'Expected one bootstrap Job'
+job = docs[0]
+assert job['kind'] == 'Job' and job['apiVersion'] == 'batch/v1'
+assert job['metadata']['name'] == f"sentinel-e2e-canary-bootstrap-{os.environ['BUILD_NUMBER']}"
+pod = job['spec']['template']['spec']
+assert pod['automountServiceAccountToken'] is False
+assert pod['restartPolicy'] == 'Never'
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+assert container['name'] == 'e2e-canary-bootstrap'
+assert container['image'] == f"omer5628/sentinel-train:{os.environ['E2E_CANARY_BOOTSTRAP_IMAGE_TAG']}"
+assert 'envFrom' not in container
+variables = {entry['name']: entry for entry in container['env']}
+assert variables['SERVING_TASK_ID']['value'] == 'f80299ed1fb44353a347dafe47b7dd25'
+assert variables['INFERENCE_BASE_URL']['value'] == (
+    'http://clearml-serving-e2e-inference.sentinel-dev.svc.cluster.local:8080'
+)
+assert variables['BASE_MODEL_ID']['value'] == os.environ['E2E_CANARY_BOOTSTRAP_BASE_MODEL_ID']
+assert variables['PREVIOUS_CANARY_MODEL_ID']['value'] == os.environ['E2E_CANARY_BOOTSTRAP_PREVIOUS_MODEL_ID']
+for key in ('CLEARML_API_ACCESS_KEY', 'CLEARML_API_SECRET_KEY'):
+    assert variables[key]['valueFrom']['secretKeyRef']['name'] == 'clearml-retraining-credentials'
+print('PASS: E2E bootstrap Job is isolated and uses the requested immutable image')
+PYCODE
+                    '''
+                }
+                script {
+                    def bootstrapStatus
+                    container('kubectl') {
+                        bootstrapStatus = sh(
+                            script: '''
+                                set -eu
+                                JOB_NAME="sentinel-e2e-canary-bootstrap-${BUILD_NUMBER}"
+                                if kubectl get job "$JOB_NAME" -n sentinel-dev >/dev/null 2>&1; then
+                                    echo 'Bootstrap Job exists; refusing reuse.' >&2
+                                    exit 1
+                                fi
+                                kubectl create --namespace sentinel-dev \
+                                  -f retraining-e2e-canary-bootstrap-job.yaml
+                                touch .e2e-canary-bootstrap-job-created
+                                if ! kubectl wait -n sentinel-dev \
+                                  --for=condition=complete "job/$JOB_NAME" --timeout=10m; then
+                                    kubectl describe -n sentinel-dev "job/$JOB_NAME" || true
+                                    kubectl logs -n sentinel-dev "job/$JOB_NAME" \
+                                      --all-containers=true > retraining-e2e-canary-bootstrap.log 2>&1 || true
+                                    cat retraining-e2e-canary-bootstrap.log || true
+                                    echo 'Inspect E2E Serving routing before retrying bootstrap.' >&2
+                                    exit 1
+                                fi
+                                kubectl logs -n sentinel-dev "job/$JOB_NAME" \
+                                  --all-containers=true > retraining-e2e-canary-bootstrap.log 2>&1
+                                cat retraining-e2e-canary-bootstrap.log
+                                grep -Eq '^e2e_canary_bootstrap_status=(initialized|already_initialized)$' \
+                                  retraining-e2e-canary-bootstrap.log
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+                    archiveArtifacts(
+                        artifacts: 'retraining-e2e-canary-bootstrap.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+                    if (bootstrapStatus != 0) {
+                        error('E2E Canary bootstrap failed; check archived logs and Serving state.')
+                    }
+                    echo 'E2E Canary bootstrap verified. No Train, production Canary, Git or checkpoint ran.'
+                    currentBuild.result = 'ABORTED'
+                    error('E2E_CANARY_BOOTSTRAP_ONLY finished intentionally.')
                 }
             }
         }
@@ -2903,6 +3079,13 @@ ASKPASS
         always {
             container('kubectl') {
                 sh '''
+                    if [ -f .e2e-canary-bootstrap-job-created ]; then
+                        kubectl delete job "sentinel-e2e-canary-bootstrap-${BUILD_NUMBER}" \
+                          --namespace sentinel-dev \
+                          --ignore-not-found=true \
+                          --wait=false || true
+                    fi
+
                     if [ -f .e2e-cleanup-job-created ]; then
                         kubectl delete job sentinel-e2e-data-gate-cleanup \
                           --namespace sentinel-dev \
@@ -2975,6 +3158,9 @@ ASKPASS
             }
 
             sh '''
+                rm -f retraining-e2e-canary-bootstrap-job.yaml
+                rm -f retraining-e2e-canary-bootstrap.log
+                rm -f .e2e-canary-bootstrap-job-created
                 rm -f retraining-fetch-job.yaml
                 rm -f retraining-fetch.log
                 rm -f retraining-validation-job.yaml

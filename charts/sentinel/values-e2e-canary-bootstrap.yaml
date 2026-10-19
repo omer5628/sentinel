@@ -1,0 +1,9 @@
+# Opt-in profile for initializing an isolated E2E ClearML Serving Canary.
+# This overlay does not enable any job by itself.
+retraining:
+  e2eCanaryBootstrap:
+    enabled: false
+    baseServingVersion: 1
+    previousServingVersion: 2
+    baseWeight: 0.9
+    previousWeight: 0.1
