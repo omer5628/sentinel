@@ -202,6 +202,31 @@ spec:
             defaultValue: '',
             description: 'Immutable sentinel-train image tag containing existing Serving registration and verification scripts.'
         )
+        booleanParam(
+            name: 'E2E_CANARY_ONLY',
+            defaultValue: false,
+            description: 'Promote an explicit model only inside the isolated E2E Serving Task; never run training, Git update or checkpoint.'
+        )
+        string(
+            name: 'E2E_CANARY_BASE_MODEL_ID',
+            defaultValue: '',
+            description: 'Expected E2E base ClearML Model ID; never resolved from production configuration.'
+        )
+        string(
+            name: 'E2E_CANARY_PREVIOUS_MODEL_ID',
+            defaultValue: '',
+            description: 'Expected currently routed E2E Canary Model ID.'
+        )
+        string(
+            name: 'E2E_CANARY_CANDIDATE_MODEL_ID',
+            defaultValue: '',
+            description: 'Existing Gatekeeper-approved candidate ClearML Model ID to promote in E2E only.'
+        )
+        string(
+            name: 'E2E_CANARY_IMAGE_TAG',
+            defaultValue: '',
+            description: 'Immutable sentinel-train image tag containing the tested promotion scripts (for example 60).'
+        )
     }
 
     stages {
@@ -280,7 +305,8 @@ spec:
                             params.E2E_VALIDATION_ONLY == true ||
                             params.E2E_TRAINING_CLEANUP_ONLY == true ||
                             params.E2E_TRAIN_ONLY == true ||
-                            params.E2E_GATEKEEPER_ONLY == true) {
+                            params.E2E_GATEKEEPER_ONLY == true ||
+                            params.E2E_CANARY_ONLY == true) {
                             error('E2E_CANARY_BOOTSTRAP_ONLY must be the only enabled pipeline mode.')
                         }
                         def base = (params.E2E_CANARY_BOOTSTRAP_BASE_MODEL_ID ?: '').trim()
@@ -292,6 +318,32 @@ spec:
                         }
                         if (!(tag ==~ /^[0-9]+$/)) {
                             error('E2E Canary bootstrap requires an immutable numeric image tag.')
+                        }
+                    }
+                    if (params.E2E_CANARY_ONLY == true) {
+                        if (params.GIT_PREFLIGHT_ONLY == true ||
+                            params.E2E_FETCH_ONLY == true ||
+                            params.E2E_SEED_DATA == true ||
+                            params.E2E_CLEANUP_ONLY == true ||
+                            params.E2E_VALIDATION_ONLY == true ||
+                            params.E2E_TRAINING_CLEANUP_ONLY == true ||
+                            params.E2E_TRAIN_ONLY == true ||
+                            params.E2E_GATEKEEPER_ONLY == true ||
+                            params.E2E_CANARY_BOOTSTRAP_ONLY == true) {
+                            error('E2E_CANARY_ONLY must be the only enabled pipeline mode.')
+                        }
+                        def base = (params.E2E_CANARY_BASE_MODEL_ID ?: '').trim()
+                        def previous = (params.E2E_CANARY_PREVIOUS_MODEL_ID ?: '').trim()
+                        def candidate = (params.E2E_CANARY_CANDIDATE_MODEL_ID ?: '').trim()
+                        def tag = (params.E2E_CANARY_IMAGE_TAG ?: '').trim()
+                        if (!(base ==~ /^[0-9a-f]{32}$/) ||
+                            !(previous ==~ /^[0-9a-f]{32}$/) ||
+                            !(candidate ==~ /^[0-9a-f]{32}$/) ||
+                            [base, previous, candidate].toSet().size() != 3) {
+                            error('E2E Canary promotion requires three distinct lowercase ClearML Model IDs.')
+                        }
+                        if (!(tag ==~ /^[0-9]+$/)) {
+                            error('E2E Canary promotion requires an immutable numeric image tag.')
                         }
                     }
                 }
@@ -428,6 +480,160 @@ PYCODE
                     echo 'E2E Canary bootstrap verified. No Train, production Canary, Git or checkpoint ran.'
                     currentBuild.result = 'ABORTED'
                     error('E2E_CANARY_BOOTSTRAP_ONLY finished intentionally.')
+                }
+            }
+        }
+
+        stage('Promote Isolated E2E Canary Only') {
+            when {
+                expression { params.E2E_CANARY_ONLY == true }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import os
+import yaml
+
+config = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
+retraining = config['retraining']
+canary = retraining['canaryPromotion']
+assert retraining['pipelineName'] == 'sentinel-retraining-e2e'
+assert canary['enabled'] is False
+assert canary['servingTaskId'] == 'f80299ed1fb44353a347dafe47b7dd25'
+assert canary['inferenceBaseUrl'] == (
+    'http://clearml-serving-e2e-inference.sentinel-dev.svc.cluster.local:8080'
+)
+assert canary['servingConfig'] == 'conf/serving/mnist.yaml'
+for name in ('E2E_CANARY_BASE_MODEL_ID', 'E2E_CANARY_PREVIOUS_MODEL_ID',
+             'E2E_CANARY_CANDIDATE_MODEL_ID'):
+    assert len(os.environ[name]) == 32
+assert int(os.environ['BUILD_NUMBER']) > 2, 'Reserved E2E base/previous Serving versions'
+print('PASS: Isolated E2E Canary promotion configuration and parameters validated')
+PYCODE
+                    '''
+                }
+                container('helm') {
+                    sh '''
+                        set -eu
+                        helm template sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          -f charts/sentinel/values-dev.yaml \
+                          -f charts/sentinel/values-e2e.yaml \
+                          --set retraining.enabled=true \
+                          --set retraining.validation.enabled=false \
+                          --set retraining.train.enabled=false \
+                          --set retraining.gatekeeper.enabled=false \
+                          --set retraining.checkpoint.enabled=false \
+                          --set retraining.e2eCanaryBootstrap.enabled=false \
+                          --set retraining.canaryPromotion.enabled=true \
+                          --set retraining.canaryPromotion.e2eIsolation.enabled=true \
+                          --set retraining.canaryPromotion.smokeTestAttempts=60 \
+                          --set retraining.canaryPromotion.smokeTestRetrySeconds=5 \
+                          --set-string "retraining.runId=${BUILD_NUMBER}" \
+                          --set-string "model.productionReference=${E2E_CANARY_BASE_MODEL_ID}" \
+                          --set-string "retraining.canaryPromotion.expectedPreviousCanaryModelReference=${E2E_CANARY_PREVIOUS_MODEL_ID}" \
+                          --set-string "retraining.canaryPromotion.candidateModelReference=${E2E_CANARY_CANDIDATE_MODEL_ID}" \
+                          --set-string "retraining.canaryPromotion.image.tag=${E2E_CANARY_IMAGE_TAG}" \
+                          --show-only templates/retraining-canary-promotion-job.yaml \
+                          > retraining-e2e-canary-promotion-job.yaml
+                        test -s retraining-e2e-canary-promotion-job.yaml
+                        echo 'Isolated E2E Canary Promotion Job rendered.'
+                    '''
+                }
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYCODE'
+from pathlib import Path
+import os
+import yaml
+
+docs = [d for d in yaml.safe_load_all(
+    Path('retraining-e2e-canary-promotion-job.yaml').read_text()
+) if d is not None]
+assert len(docs) == 1, 'Expected exactly one isolated promotion Job'
+job = docs[0]
+assert job['apiVersion'] == 'batch/v1' and job['kind'] == 'Job'
+assert job['metadata']['name'] == f"sentinel-retraining-canary-promotion-{os.environ['BUILD_NUMBER']}"
+pod = job['spec']['template']['spec']
+assert pod['automountServiceAccountToken'] is False
+assert pod['restartPolicy'] == 'Never'
+assert len(pod['containers']) == 1
+container = pod['containers'][0]
+assert container['name'] == 'canary-promotion'
+assert container['image'] == f"omer5628/sentinel-train:{os.environ['E2E_CANARY_IMAGE_TAG']}"
+assert 'envFrom' not in container
+variables = {v['name']: v for v in container['env']}
+expected = {
+    'SERVING_TASK_ID': 'f80299ed1fb44353a347dafe47b7dd25',
+    'INFERENCE_BASE_URL': 'http://clearml-serving-e2e-inference.sentinel-dev.svc.cluster.local:8080',
+    'SERVING_CONFIG': 'conf/serving/mnist.yaml',
+    'PRODUCTION_MODEL_ID': os.environ['E2E_CANARY_BASE_MODEL_ID'],
+    'EXPECTED_PREVIOUS_CANARY_MODEL_ID': os.environ['E2E_CANARY_PREVIOUS_MODEL_ID'],
+    'CANDIDATE_MODEL_ID': os.environ['E2E_CANARY_CANDIDATE_MODEL_ID'],
+    'SERVING_VERSION': os.environ['BUILD_NUMBER'],
+    'MODEL_VERSION': f"retrain-{os.environ['BUILD_NUMBER']}",
+    'SMOKE_TEST_ATTEMPTS': '60',
+    'SMOKE_TEST_RETRY_SECONDS': '5',
+}
+for name, value in expected.items():
+    assert variables[name]['value'] == value, f'Unsafe promotion configuration: {name}'
+for name in ('CLEARML_API_ACCESS_KEY', 'CLEARML_API_SECRET_KEY'):
+    assert variables[name]['valueFrom']['secretKeyRef']['name'] == 'clearml-retraining-credentials'
+script = '\n'.join(container['args'])
+assert script.index('E2E Canary isolation preflight passed') < script.index('python scripts/register_serving_candidate.py')
+assert 'e2e_canary_promotion_status=routing_verified' in script
+print('PASS: E2E promotion isolation, pre-registration guard, and immutable image validated')
+PYCODE
+                    '''
+                }
+                script {
+                    def promotionStatus
+                    container('kubectl') {
+                        promotionStatus = sh(
+                            script: '''
+                                set -eu
+                                JOB_NAME="sentinel-retraining-canary-promotion-${BUILD_NUMBER}"
+                                if kubectl get job "$JOB_NAME" -n sentinel-dev >/dev/null 2>&1; then
+                                    echo 'E2E Promotion Job exists; refusing reuse.' >&2
+                                    exit 1
+                                fi
+                                kubectl create -n sentinel-dev -f retraining-e2e-canary-promotion-job.yaml
+                                touch .e2e-canary-promotion-job-created
+                                if ! kubectl wait -n sentinel-dev \
+                                  --for=condition=complete "job/$JOB_NAME" --timeout=12m; then
+                                    kubectl describe -n sentinel-dev "job/$JOB_NAME" || true
+                                    kubectl logs -n sentinel-dev "job/$JOB_NAME" \
+                                      --all-containers=true > retraining-e2e-canary-promotion.log 2>&1 || true
+                                    cat retraining-e2e-canary-promotion.log || true
+                                    echo 'Inspect isolated E2E Serving routing before retrying promotion.' >&2
+                                    exit 1
+                                fi
+                                kubectl logs -n sentinel-dev "job/$JOB_NAME" \
+                                  --all-containers=true > retraining-e2e-canary-promotion.log 2>&1
+                                cat retraining-e2e-canary-promotion.log
+                                grep -Fx 'canary_promotion_status=routing_verified' \
+                                  retraining-e2e-canary-promotion.log >/dev/null
+                                grep -Fx 'e2e_canary_promotion_status=routing_verified' \
+                                  retraining-e2e-canary-promotion.log >/dev/null
+                            ''',
+                            returnStatus: true
+                        )
+                    }
+                    archiveArtifacts(
+                        artifacts: 'retraining-e2e-canary-promotion.log',
+                        fingerprint: true,
+                        allowEmptyArchive: true
+                    )
+                    if (promotionStatus != 0) {
+                        error('Isolated E2E Canary promotion failed; inspect logs and live routing before retry.')
+                    }
+                    echo 'E2E Canary promotion verified. No training, production Canary, Git or checkpoint ran.'
+                    currentBuild.result = 'ABORTED'
+                    error('E2E_CANARY_ONLY finished intentionally.')
                 }
             }
         }
@@ -3086,6 +3292,13 @@ ASKPASS
                           --wait=false || true
                     fi
 
+                    if [ -f .e2e-canary-promotion-job-created ]; then
+                        kubectl delete job "sentinel-retraining-canary-promotion-${BUILD_NUMBER}" \
+                          --namespace sentinel-dev \
+                          --ignore-not-found=true \
+                          --wait=false || true
+                    fi
+
                     if [ -f .e2e-cleanup-job-created ]; then
                         kubectl delete job sentinel-e2e-data-gate-cleanup \
                           --namespace sentinel-dev \
@@ -3161,6 +3374,9 @@ ASKPASS
                 rm -f retraining-e2e-canary-bootstrap-job.yaml
                 rm -f retraining-e2e-canary-bootstrap.log
                 rm -f .e2e-canary-bootstrap-job-created
+                rm -f retraining-e2e-canary-promotion-job.yaml
+                rm -f retraining-e2e-canary-promotion.log
+                rm -f .e2e-canary-promotion-job-created
                 rm -f retraining-fetch-job.yaml
                 rm -f retraining-fetch.log
                 rm -f retraining-validation-job.yaml

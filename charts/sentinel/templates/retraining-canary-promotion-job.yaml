@@ -9,6 +9,8 @@
 {{- end }}
 
 {{- $promotion := .Values.retraining.canaryPromotion -}}
+{{- $e2eSettings := get $promotion "e2eIsolation" | default dict -}}
+{{- $e2eIsolation := get $e2eSettings "enabled" | default false -}}
 {{- $servingTaskId := required
     "retraining.canaryPromotion.servingTaskId is required"
     $promotion.servingTaskId
@@ -59,6 +61,21 @@
     .Values.retraining.clearml.webHost
 -}}
 
+{{- if $e2eIsolation -}}
+{{- if ne .Release.Namespace "sentinel-dev" -}}
+{{- fail "E2E Canary promotion refused: unauthorized namespace" -}}
+{{- end -}}
+{{- if ne $servingTaskId "f80299ed1fb44353a347dafe47b7dd25" -}}
+{{- fail "E2E Canary promotion refused: unauthorized Serving Task ID" -}}
+{{- end -}}
+{{- if ne $inferenceBaseUrl "http://clearml-serving-e2e-inference.sentinel-dev.svc.cluster.local:8080" -}}
+{{- fail "E2E Canary promotion refused: unauthorized inference service" -}}
+{{- end -}}
+{{- if lt (int $runId) 3 -}}
+{{- fail "E2E Canary promotion refused: Serving version is reserved" -}}
+{{- end -}}
+{{- end }}
+
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -93,6 +110,70 @@ spec:
             - |
               set -eu
 
+              {{- if $e2eIsolation }}
+              # Fail closed before any ClearML Serving mutation (including registration).
+              python - <<'PY'
+              import math
+              import os
+              import sys
+
+              from omegaconf import OmegaConf
+
+              sys.path.insert(0, "scripts")
+              from promote_serving_canary import _model_id_at, read_serving_state
+
+              task = os.environ["SERVING_TASK_ID"]
+              url = os.environ["INFERENCE_BASE_URL"]
+              if task != "f80299ed1fb44353a347dafe47b7dd25":
+                  raise RuntimeError("Unauthorized E2E Serving Task ID")
+              if url != "http://clearml-serving-e2e-inference.sentinel-dev.svc.cluster.local:8080":
+                  raise RuntimeError("Unauthorized E2E inference endpoint")
+
+              config = OmegaConf.load(os.environ["SERVING_CONFIG"])
+              base = str(config.endpoints.base)
+              canary = str(config.endpoints.canary)
+              current = os.environ["PRODUCTION_MODEL_ID"].lower()
+              previous = os.environ["EXPECTED_PREVIOUS_CANARY_MODEL_ID"].lower()
+              candidate = os.environ["CANDIDATE_MODEL_ID"].lower()
+              version = int(os.environ["SERVING_VERSION"])
+              if version <= 2 or len({current, previous, candidate}) != 3:
+                  raise RuntimeError("Invalid isolated E2E model IDs or Serving version")
+
+              state = read_serving_state(task)
+              base_route = f"{base}/1"
+              previous_route = f"{base}/2"
+              candidate_route = f"{base}/{version}"
+              allowed_endpoints = {base_route, previous_route, candidate_route}
+              if not {base_route, previous_route}.issubset(state.endpoints):
+                  raise RuntimeError("Missing E2E base or previous Canary endpoint")
+              if not set(state.endpoints).issubset(allowed_endpoints):
+                  raise RuntimeError("Unexpected E2E Serving endpoint; refusing promotion")
+              if _model_id_at(state, base_route) != current:
+                  raise RuntimeError("E2E base model does not match expected baseline")
+              if _model_id_at(state, previous_route) != previous:
+                  raise RuntimeError("E2E previous Canary model differs from expected")
+              if candidate_route in state.endpoints and _model_id_at(state, candidate_route) != candidate:
+                  raise RuntimeError("E2E candidate Serving version belongs to another model")
+
+              if set(state.canary) != {canary}:
+                  raise RuntimeError("Unexpected E2E Canary routing keys")
+              route = state.canary[canary]
+              if not isinstance(route, dict) or route.get("load_endpoint_prefix") is not None:
+                  raise RuntimeError("Unsupported E2E Canary route")
+              if route.get("load_endpoints") != [base_route, previous_route]:
+                  raise RuntimeError("E2E Canary endpoints changed before promotion")
+              weights = route.get("weights")
+              if not isinstance(weights, list) or len(weights) != 2 or any(
+                  isinstance(value, bool) or not isinstance(value, (int, float))
+                  or not math.isfinite(value)
+                  or not math.isclose(float(value), target, abs_tol=1e-8, rel_tol=0)
+                  for value, target in zip(weights, (0.9, 0.1))
+              ):
+                  raise RuntimeError("E2E Canary traffic weights differ from 90/10")
+              print("E2E Canary isolation preflight passed")
+              PY
+
+              {{- end }}
               python scripts/register_serving_candidate.py \
                 --config "$SERVING_CONFIG" \
                 --serving-task-id "$SERVING_TASK_ID" \
@@ -160,6 +241,46 @@ spec:
                 --serving-version "$SERVING_VERSION" \
                 --execute
 
+              {{- if $e2eIsolation }}
+              # Verify the E2E Canary outcome independently of the generic promotion script.
+              python - <<'PY'
+              import math
+              import os
+              import sys
+
+              from omegaconf import OmegaConf
+
+              sys.path.insert(0, "scripts")
+              from promote_serving_canary import _model_id_at, read_serving_state
+
+              cfg = OmegaConf.load(os.environ["SERVING_CONFIG"])
+              task = os.environ["SERVING_TASK_ID"]
+              if task != "f80299ed1fb44353a347dafe47b7dd25":
+                  raise RuntimeError("Unauthorized E2E task during final verification")
+              state = read_serving_state(task)
+              base_route = f"{cfg.endpoints.base}/1"
+              candidate_route = f"{cfg.endpoints.base}/{os.environ['SERVING_VERSION']}"
+              route_name = str(cfg.endpoints.canary)
+              if set(state.canary) != {route_name}:
+                  raise RuntimeError("Unexpected E2E Canary routing after promotion")
+              route = state.canary[route_name]
+              if route.get("load_endpoint_prefix") is not None or route.get("load_endpoints") != [
+                  base_route, candidate_route
+              ]:
+                  raise RuntimeError("E2E Canary endpoint replacement was not verified")
+              weights = route.get("weights")
+              if not isinstance(weights, list) or len(weights) != 2 or any(
+                  isinstance(w, bool) or not isinstance(w, (int, float))
+                  or not math.isclose(float(w), expected, abs_tol=1e-8, rel_tol=0)
+                  for w, expected in zip(weights, (0.9, 0.1))
+              ):
+                  raise RuntimeError("E2E traffic weights were changed")
+              if (_model_id_at(state, base_route) != os.environ["PRODUCTION_MODEL_ID"].lower()
+                  or _model_id_at(state, candidate_route) != os.environ["CANDIDATE_MODEL_ID"].lower()):
+                  raise RuntimeError("Wrong models after E2E Canary promotion")
+              print("e2e_canary_promotion_status=routing_verified")
+              PY
+              {{- end }}
               echo "canary_promotion_status=routing_verified"
           env:
             - name: SERVING_CONFIG
