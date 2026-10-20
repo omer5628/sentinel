@@ -124,6 +124,11 @@ spec:
 
     parameters {
         booleanParam(
+            name: 'DEPLOY_ALERTMANAGER_ONLY',
+            defaultValue: false,
+            description: 'Apply only the Dev AlertManager webhook change; reject any other Helm resource changes. Never deploy Production.'
+        )
+        booleanParam(
             name: 'E2E_BUILD_TRAIN_ONLY',
             defaultValue: false,
             description: 'Build, scan and publish the immutable sentinel-train image only. Never deploy Dev or Production.'
@@ -146,6 +151,116 @@ spec:
     }
 
     stages {
+        stage('Deploy AlertManager Dev Only') {
+            when {
+                expression { params.DEPLOY_ALERTMANAGER_ONLY == true }
+            }
+            steps {
+                script {
+                    if (params.E2E_BUILD_TRAIN_ONLY == true ||
+                        params.DEPLOY_CLEARML_SERVING_E2E == true ||
+                        params.BOOTSTRAP_E2E_DATABASE == true) {
+                        error('DEPLOY_ALERTMANAGER_ONLY cannot be combined with another special mode.')
+                    }
+                }
+                container('helm') {
+                    sh '''
+                        set -eu
+
+                        # Reuse installed release values, including immutable image tags.
+                        # The only intentional override is enabling the Dev webhook.
+                        helm get manifest sentinel --namespace sentinel-dev \
+                          > alertmanager-before.yaml
+
+                        helm upgrade sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          --reuse-values \
+                          --set alertmanager.jenkinsWebhook.enabled=true \
+                          --dry-run=client \
+                          > alertmanager-preview.txt
+                    '''
+                }
+                container('python') {
+                    sh '''
+                        set -eu
+                        uv run --frozen python - <<'PYVALIDATE'
+from pathlib import Path
+import yaml
+
+
+def read_objects(text):
+    result = {}
+    for doc in yaml.safe_load_all(text):
+        if not isinstance(doc, dict):
+            continue
+        key = (doc.get("kind"), doc.get("metadata", {}).get("name"))
+        if not all(key) or key in result:
+            raise RuntimeError(f"Invalid or duplicate resource: {key}")
+        result[key] = doc
+    return result
+
+
+current = read_objects(Path("alertmanager-before.yaml").read_text())
+preview_output = Path("alertmanager-preview.txt").read_text()
+marker = chr(10) + "MANIFEST:" + chr(10)
+if marker not in preview_output:
+    raise RuntimeError("Helm preview does not contain a MANIFEST section")
+preview_manifest = preview_output.split(marker, 1)[1].split(chr(10) + "NOTES:" + chr(10), 1)[0]
+proposed = read_objects(preview_manifest)
+
+if current.keys() != proposed.keys():
+    raise RuntimeError("Dev-only upgrade refused: Helm resources added or removed")
+
+changed = {key for key in current if current[key] != proposed[key]}
+allowed = {
+    ("ConfigMap", "alertmanager-config"),
+    ("Deployment", "alertmanager"),
+}
+if changed != allowed:
+    raise RuntimeError(f"Unexpected resources changed: {changed}; expected: {allowed}")
+
+config = yaml.safe_load(proposed[("ConfigMap", "alertmanager-config")]["data"]["alertmanager.yml"])
+routes = config["route"].get("routes", [])
+assert any(
+    route.get("receiver") == "jenkins-retraining"
+    and 'alertname="SentinelPredictionDistributionDrift"' in route.get("matchers", [])
+    for route in routes
+), "Drift-specific route is missing"
+receivers = [r for r in config["receivers"] if r["name"] == "jenkins-retraining"]
+assert len(receivers) == 1 and len(receivers[0].get("webhook_configs", [])) == 1
+hook = receivers[0]["webhook_configs"][0]
+assert hook["url"] == "http://jenkins.jenkins.svc.cluster.local:8080/generic-webhook-trigger/invoke"
+assert hook["http_config"]["basic_auth"]["password_file"] == "/etc/alertmanager/secrets/jenkins/password"
+
+pod = proposed[("Deployment", "alertmanager")]["spec"]["template"]["spec"]
+assert any(
+    v.get("secret", {}).get("secretName") == "sentinel-alertmanager-credentials"
+    for v in pod["volumes"]
+), "Webhook credentials Secret is not mounted"
+
+print("PASS: Only Dev AlertManager ConfigMap and Deployment will change")
+PYVALIDATE
+                    '''
+                }
+                container('helm') {
+                    sh '''
+                        set -eu
+                        helm upgrade sentinel charts/sentinel \
+                          --namespace sentinel-dev \
+                          --reuse-values \
+                          --set alertmanager.jenkinsWebhook.enabled=true \
+                          --atomic --wait --timeout 10m
+                        echo 'Dev AlertManager webhook enabled; other Sentinel workloads preserved.'
+                    '''
+                }
+                script {
+                    echo('DEPLOY_ALERTMANAGER_ONLY completed. Dev AlertManager only; no Production deployment.')
+                    currentBuild.result = 'ABORTED'
+                    error('DEPLOY_ALERTMANAGER_ONLY finished intentionally.')
+                }
+            }
+        }
+
         stage('E2E Build Train Image Only') {
             when {
                 expression { params.E2E_BUILD_TRAIN_ONLY == true }
