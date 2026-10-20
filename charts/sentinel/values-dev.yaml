@@ -24,7 +24,7 @@ alertmanager:
   enabled: true
 
   jenkinsWebhook:
-    enabled: false
+    enabled: true
     alertName: "SentinelPredictionDistributionDrift"
     url: "http://jenkins.jenkins.svc.cluster.local:8080/generic-webhook-trigger/invoke"
     username: "sentinel-alertmanager"
