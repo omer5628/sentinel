@@ -132,6 +132,11 @@ spec:
             defaultValue: '',
             description: 'Immutable baseline ClearML Model ID (32 lowercase hex). Used only for the isolated protection test.'
         )
+        string(
+            name: 'E2E_PROTECTION_TRAIN_IMAGE_TAG',
+            defaultValue: '',
+            description: 'Immutable numeric sentinel-train image tag for isolated Training and Gatekeeper (e.g. 62); no workload deployment.'
+        )
     }
 
     stages {
@@ -143,7 +148,11 @@ spec:
                         if (!(baseline ==~ /^[0-9a-f]{32}$/)) {
                             error('Protection Test requires an explicit, immutable 32-character lowercase baseline ClearML Model ID.')
                         }
-                        echo('Isolated Protection Test only: sentinel_e2e database; no Canary, Git or checkpoint.')
+                        def trainTag = (params.E2E_PROTECTION_TRAIN_IMAGE_TAG ?: '').trim()
+                        if (!(trainTag ==~ /^[0-9]+$/)) {
+                            error('Protection Test requires an explicit immutable numeric sentinel-train image tag.')
+                        }
+                        echo("Isolated Protection Test: sentinel_e2e; train/gatekeeper image tag=${trainTag}; no Canary, Git or checkpoint.")
                     }
                 }
             }
@@ -1077,6 +1086,15 @@ PYCODE
                             cat .retraining-worker-tag
                         )"
 
+                        # Only the isolated Protection Test uses a separately built Train image.
+                        TRAIN_TAG="$WORKER_TAG"
+                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
+                            TRAIN_TAG="${E2E_PROTECTION_TRAIN_IMAGE_TAG:-}"
+                            case "$TRAIN_TAG" in
+                                ''|*[!0-9]*) echo 'Invalid Protection Test train image tag.' >&2; exit 1 ;;
+                            esac
+                        fi
+
                         RETRAINING_CUTOFF="$(
                             cat .retraining-cutoff
                         )"
@@ -1096,7 +1114,7 @@ PYCODE
                           --set retraining.train.enabled=true \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
                           --set-string retraining.cutoff="${RETRAINING_CUTOFF}" \
-                          --set-string retraining.train.image.tag="${WORKER_TAG}" \
+                          --set-string retraining.train.image.tag="${TRAIN_TAG}" \
                           --show-only templates/retraining-train-job.yaml \
                           > retraining-train-job.yaml
 
@@ -1120,12 +1138,12 @@ PYCODE
                         fi
 
                         case "$TRAIN_IMAGE" in
-                            *:"${WORKER_TAG}")
+                            *:"${TRAIN_TAG}")
                                 ;;
                             *)
-                                echo "Training image tag does not match deployed worker tag."
+                                echo "Training image tag does not match the selected immutable tag."
                                 echo "Rendered training image: $TRAIN_IMAGE"
-                                echo "Expected immutable tag: $WORKER_TAG"
+                                echo "Expected immutable tag: $TRAIN_TAG"
                                 exit 1
                                 ;;
                         esac
@@ -1174,9 +1192,10 @@ container = pod['containers'][0]
 assert container['name'] == 'retraining-train'
 assert 'envFrom' not in container
 worker_tag = Path('.retraining-worker-tag').read_text().strip()
-assert worker_tag.isdigit(), 'Invalid immutable image tag'
-assert container['image'] == f"{container['image'].rsplit(':', 1)[0]}:{worker_tag}"
-assert container['image'].rsplit(':', 1)[0], 'Training image repository is empty'
+assert worker_tag.isdigit(), 'Invalid deployed worker image tag'
+protection_tag = os.environ['E2E_PROTECTION_TRAIN_IMAGE_TAG'].strip()
+assert protection_tag.isdigit(), 'Invalid immutable Protection Test image tag'
+assert container['image'] == f'omer5628/sentinel-train:{protection_tag}', 'Wrong isolated Train image'
 
 variables = {entry['name']: entry for entry in container['env']}
 for name in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
@@ -1283,6 +1302,22 @@ PYCODE
                         )
                     }
 
+                    if (params.E2E_PROTECTION_TEST_ONLY == true) {
+                        sh '''
+                            set -eu
+                            grep -Fx 'Using training profile: e2e_fast' retraining-train.log >/dev/null
+                            grep -Fx 'Base samples: 1000' retraining-train.log >/dev/null
+                            grep -Fx 'Human-labeled samples: 1000' retraining-train.log >/dev/null
+                            grep -Fx 'Combined samples: 2000' retraining-train.log >/dev/null
+                            grep -F 'Epoch 1/1 |' retraining-train.log >/dev/null
+                            if grep -Eq 'Epoch [2-9][0-9]*/' retraining-train.log; then
+                                echo 'Protection Test: unexpected additional training epochs.' >&2
+                                exit 1
+                            fi
+                            echo 'PASS: e2e_fast used 1 epoch and exactly 1000 base + 1000 corrupted samples.'
+                        '''
+                    }
+
                     echo(
                         'Retraining completed successfully. ' +
                         'Candidate model resolution will run next.'
@@ -1363,6 +1398,14 @@ PYCODE
                             cat .retraining-worker-tag
                         )"
 
+                        GATEKEEPER_TAG="$WORKER_TAG"
+                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
+                            GATEKEEPER_TAG="${E2E_PROTECTION_TRAIN_IMAGE_TAG:-}"
+                            case "$GATEKEEPER_TAG" in
+                                ''|*[!0-9]*) echo 'Invalid Protection Test Gatekeeper image tag.' >&2; exit 1 ;;
+                            esac
+                        fi
+
                         if [ "$CURRENT_MODEL_ID" = "$CANDIDATE_MODEL_ID" ]; then
                             echo "Current and candidate model IDs are identical."
                             exit 1
@@ -1390,7 +1433,7 @@ PYCODE
                           --set-string retraining.runId="${BUILD_NUMBER}" \
                           --set-string retraining.gatekeeper.currentModelReference="${CURRENT_MODEL_ID}" \
                           --set-string retraining.gatekeeper.candidateModelReference="${CANDIDATE_MODEL_ID}" \
-                          --set-string retraining.gatekeeper.image.tag="${WORKER_TAG}" \
+                          --set-string retraining.gatekeeper.image.tag="${GATEKEEPER_TAG}" \
                           --show-only templates/retraining-gatekeeper-job.yaml \
                           > retraining-gatekeeper-job.yaml
 
@@ -1429,15 +1472,22 @@ PYCODE
                         fi
 
                         case "$GATEKEEPER_IMAGE" in
-                            *:"${WORKER_TAG}")
+                            *:"${GATEKEEPER_TAG}")
                                 ;;
                             *)
-                                echo "Gatekeeper image tag does not match the immutable worker tag."
+                                echo "Gatekeeper image tag does not match the selected immutable tag."
                                 echo "Rendered Gatekeeper image: $GATEKEEPER_IMAGE"
-                                echo "Expected immutable tag: $WORKER_TAG"
+                                echo "Expected immutable tag: $GATEKEEPER_TAG"
                                 exit 1
                                 ;;
                         esac
+
+                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
+                            test "$GATEKEEPER_IMAGE" = "omer5628/sentinel-train:${GATEKEEPER_TAG}" || {
+                                echo 'Protection Test refuses unexpected Gatekeeper image repository.' >&2
+                                exit 1
+                            }
+                        fi
 
                         echo "Using Gatekeeper image: $GATEKEEPER_IMAGE"
                         echo "Gatekeeper Job rendered successfully."
