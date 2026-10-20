@@ -121,271 +121,38 @@ spec:
         timeout(time: 75, unit: 'MINUTES')
     }
 
-    parameters {
-        booleanParam(
-            name: 'E2E_PROTECTION_TEST_ONLY',
-            defaultValue: false,
-            description: 'Isolated corrupted-label test: Seed, Fetch, Validation, Training, strict Gatekeeper rejection and Cleanup. No Canary, Git or checkpoint.'
-        )
-        string(
-            name: 'E2E_PROTECTION_BASE_MODEL_ID',
-            defaultValue: '',
-            description: 'Immutable baseline ClearML Model ID (32 lowercase hex). Used only for the isolated protection test.'
-        )
-        string(
-            name: 'E2E_PROTECTION_TRAIN_IMAGE_TAG',
-            defaultValue: '',
-            description: 'Immutable numeric sentinel-train image tag for isolated Training and Gatekeeper (e.g. 62); no workload deployment.'
-        )
-    }
-
     stages {
-        stage('Protection Test Guard') {
-            steps {
-                script {
-                    if (params.E2E_PROTECTION_TEST_ONLY == true) {
-                        def baseline = (params.E2E_PROTECTION_BASE_MODEL_ID ?: '').trim()
-                        if (!(baseline ==~ /^[0-9a-f]{32}$/)) {
-                            error('Protection Test requires an explicit, immutable 32-character lowercase baseline ClearML Model ID.')
-                        }
-                        def trainTag = (params.E2E_PROTECTION_TRAIN_IMAGE_TAG ?: '').trim()
-                        if (!(trainTag ==~ /^[0-9]+$/)) {
-                            error('Protection Test requires an explicit immutable numeric sentinel-train image tag.')
-                        }
-                        echo("Isolated Protection Test: sentinel_e2e; train/gatekeeper image tag=${trainTag}; no Canary, Git or checkpoint.")
-                    }
-                }
-            }
-        }
-
-        stage('Seed Corrupted E2E Protection Fixtures') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY == true }
-            }
-            steps {
-                container('python') {
-                    sh '''
-                        set -eu
-                        uv run --frozen python - <<'PYCODE'
-from pathlib import Path
-import yaml
-values = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
-r = values['retraining']
-assert r['pipelineName'] == 'sentinel-retraining-e2e'
-assert r['database'] == {
-    'configMapName': 'sentinel-retraining-e2e-db',
-    'credentialsSecretName': 'sentinel-retraining-e2e-db-credentials',
-}
-assert r['databaseBootstrap']['databaseName'] == 'sentinel_e2e'
-assert r['canaryPromotion']['enabled'] is False
-print('PASS: Protection Test E2E configuration isolated')
-PYCODE
-                    '''
-                }
-                container('helm') {
-                    sh '''
-                        set -eu
-                        helm template sentinel charts/sentinel \
-                          --namespace sentinel-dev \
-                          -f charts/sentinel/values-dev.yaml \
-                          -f charts/sentinel/values-e2e.yaml \
-                          --set retraining.e2eCorruptedSeed.enabled=true \
-                          --show-only templates/retraining-e2e-corrupted-seed-job.yaml \
-                          > retraining-e2e-corrupted-seed-job.yaml
-                        test -s retraining-e2e-corrupted-seed-job.yaml
-                        helm template sentinel charts/sentinel \
-                          --namespace sentinel-dev \
-                          -f charts/sentinel/values-dev.yaml \
-                          -f charts/sentinel/values-e2e.yaml \
-                          --set retraining.e2eCorruptedCleanup.enabled=true \
-                          --show-only templates/retraining-e2e-corrupted-cleanup-job.yaml \
-                          > retraining-e2e-corrupted-cleanup-job.yaml
-                        test -s retraining-e2e-corrupted-cleanup-job.yaml
-                    '''
-                }
-                container('python') {
-                    sh '''
-                        set -eu
-                        uv run --frozen python - <<'PYCODE'
-from pathlib import Path
-import yaml
-expected = {
-    'retraining-e2e-corrupted-seed-job.yaml': (
-        'sentinel-e2e-corrupted-seed', 'postgres-corrupted-seed',
-        'sentinel-e2e-corrupted-fixture-', 'e2e_corrupted',
-    ),
-    'retraining-e2e-corrupted-cleanup-job.yaml': (
-        'sentinel-e2e-corrupted-cleanup', 'postgres-corrupted-cleanup',
-        'sentinel-e2e-corrupted-fixture-', 'e2e_corrupted',
-    ),
-}
-for path, (name, container_name, fixture_prefix, version) in expected.items():
-    manifests = [doc for doc in yaml.safe_load_all(Path(path).read_text()) if doc]
-    assert len(manifests) == 1, path
-    job = manifests[0]
-    assert job['apiVersion'] == 'batch/v1' and job['kind'] == 'Job'
-    assert job['metadata']['name'] == name
-    pod = job['spec']['template']['spec']
-    assert pod['automountServiceAccountToken'] is False
-    assert pod['restartPolicy'] == 'Never'
-    assert len(pod['containers']) == 1
-    c = pod['containers'][0]
-    assert c['name'] == container_name
-    env = {item['name']: item for item in c['env']}
-    assert env['K8S_NAMESPACE']['valueFrom']['fieldRef']['fieldPath'] == 'metadata.namespace'
-    for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
-        assert env[key]['valueFrom']['configMapKeyRef'] == {
-            'name': 'sentinel-retraining-e2e-db', 'key': key,
-        }
-    for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
-        assert env[key]['valueFrom']['secretKeyRef'] == {
-            'name': 'sentinel-retraining-e2e-db-credentials', 'key': key,
-        }
-    script = ''.join(c['args'])
-    for text in ('sentinel-dev', 'sentinel_e2e', 'sentinel_e2e_user',
-                 'current_database()', 'current_user', fixture_prefix,
-                 version, 'generate_series(1, 1000)', 'COMMIT;'):
-        assert text in script, f'{path}: missing guard {text}'
-    if 'cleanup' in name:
-        for text in ('deleted_count NOT IN (0, 1000)', 'remaining_count <> 0'):
-            assert text in script, f'{path}: missing cleanup guard {text}'
-print('PASS: Corrupted Seed and Cleanup jobs confined to isolated DB and exact fixture identities')
-PYCODE
-                    '''
-                }
-                container('kubectl') {
-                    sh '''
-                        set -eu
-                        NS=sentinel-dev
-                        test "$(kubectl get configmap sentinel-ops-flags -n "$NS" \
-                          -o jsonpath='{.data.RETRAINING_ENABLED}')" = false || {
-                            echo 'Emergency Brake must remain disabled for this test.' >&2
-                            exit 1
-                        }
-                        test "$(kubectl get configmap sentinel-retraining-e2e-db -n "$NS" \
-                          -o jsonpath='{.data.POSTGRES_DB}')" = sentinel_e2e
-                        test "$(kubectl get configmap sentinel-retraining-e2e-db -n "$NS" \
-                          -o jsonpath='{.data.POSTGRES_HOST}')" = \
-                          postgres-0.postgres-headless.sentinel-dev.svc.cluster.local
-                        test "$(kubectl get secret sentinel-retraining-e2e-db-credentials \
-                          -n "$NS" -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)" = sentinel_e2e_user
-                        for job in sentinel-e2e-corrupted-seed sentinel-e2e-corrupted-cleanup; do
-                            if kubectl get job "$job" -n "$NS" >/dev/null 2>&1; then
-                                echo "Unexpected existing E2E Job: $job" >&2
-                                exit 1
-                            fi
-                        done
-                        # Mark before create so post always attempts cleanup, even if create times out.
-                        touch .e2e-corrupted-seed-attempted
-                        kubectl create -n "$NS" -f retraining-e2e-corrupted-seed-job.yaml
-                        if ! kubectl wait -n "$NS" --for=condition=complete \
-                          job/sentinel-e2e-corrupted-seed --timeout=5m; then
-                            kubectl logs -n "$NS" job/sentinel-e2e-corrupted-seed \
-                              --all-containers=true > retraining-e2e-corrupted-seed.log 2>&1 || true
-                            cat retraining-e2e-corrupted-seed.log || true
-                            exit 1
-                        fi
-                        kubectl logs -n "$NS" job/sentinel-e2e-corrupted-seed \
-                          --all-containers=true > retraining-e2e-corrupted-seed.log 2>&1
-                        cat retraining-e2e-corrupted-seed.log
-                        grep -Fx 'E2E corrupted seed completed successfully.' \
-                          retraining-e2e-corrupted-seed.log >/dev/null
-                    '''
-                }
-                archiveArtifacts(
-                    artifacts: 'retraining-e2e-corrupted-seed.log',
-                    fingerprint: true,
-                    allowEmptyArchive: true
-                )
-            }
-        }
-
-        stage('E2E Fetch Preflight') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY == true }
-            }
-            steps {
-                container('python') {
-                    sh '''
-                        set -eu
-                        uv run --frozen python - <<'PYCODE'
-from pathlib import Path
-import yaml
-
-config = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
-retraining = config['retraining']
-assert retraining['pipelineName'] == 'sentinel-retraining-e2e'
-assert retraining['database'] == {
-    'configMapName': 'sentinel-retraining-e2e-db',
-    'credentialsSecretName': 'sentinel-retraining-e2e-db-credentials',
-}, 'Unsafe E2E database configuration'
-assert retraining['databaseBootstrap']['databaseName'] == 'sentinel_e2e'
-assert retraining['canaryPromotion']['enabled'] is False
-print('PASS: E2E Fetch configuration preflight')
-PYCODE
-                    '''
-                }
-                container('kubectl') {
-                    sh '''
-                        set -eu
-                        NAMESPACE=sentinel-dev
-                        E2E_DB="$(kubectl get configmap sentinel-retraining-e2e-db \
-                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_DB}')"
-                        test "$E2E_DB" = 'sentinel_e2e' || {
-                            echo 'Refusing E2E: wrong database in ConfigMap.' >&2
-                            exit 1
-                        }
-                        kubectl get secret sentinel-retraining-e2e-db-credentials \
-                          -n "$NAMESPACE" -o name > /dev/null
-                        echo 'PASS: Isolated E2E database configuration is present.'
-                    '''
-                }
-            }
-        }
-
-
         stage('Emergency Brake') {
             steps {
                 script {
-                    if (params.E2E_PROTECTION_TEST_ONLY == true) {
-                        echo 'Isolated E2E verification mode: bypassing the live retraining brake.'
-                        echo 'Only the requested E2E stages may run; Canary, Git update and checkpoint are forbidden.'
-                    } else {
-                        def retrainingEnabled = sh(
-                            script: '''
-                                python scripts/read_ops_flag.py \
-                                  RETRAINING_ENABLED \
-                                  sentinel-dev
-                            ''',
-                            returnStdout: true
-                        ).trim()
+                    def retrainingEnabled = sh(
+                        script: '''
+                            python scripts/read_ops_flag.py \
+                              RETRAINING_ENABLED \
+                              sentinel-dev
+                        ''',
+                        returnStdout: true
+                    ).trim()
 
-                        echo(
-                            "RETRAINING_ENABLED=${retrainingEnabled}"
-                        )
+                    echo("RETRAINING_ENABLED=${retrainingEnabled}")
 
-                        if (retrainingEnabled != 'true') {
-                            currentBuild.result = 'ABORTED'
-
-                            error(
-                                'Continuous retraining is disabled ' +
-                                'by sentinel-ops-flags.'
-                            )
-                        }
-
-                        echo(
-                            'Emergency brake passed. ' +
-                            'Continuous retraining is enabled.'
+                    if (retrainingEnabled != 'true') {
+                        currentBuild.result = 'ABORTED'
+                        error(
+                            'Continuous retraining is disabled ' +
+                            'by sentinel-ops-flags.'
                         )
                     }
+
+                    echo(
+                        'Emergency brake passed. ' +
+                        'Continuous retraining is enabled.'
+                    )
                 }
             }
         }
 
         stage('Resolve Current Model') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 container('python') {
                     sh '''
@@ -487,21 +254,6 @@ PY
             }
         }
 
-        stage('Resolve Protection Test Baseline') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY == true }
-            }
-            steps {
-                sh '''
-                    set -eu
-                    BASELINE="${E2E_PROTECTION_BASE_MODEL_ID:-}"
-                    printf '%s\n' "$BASELINE" | grep -Eq '^[0-9a-f]{32}$'
-                    printf '%s\n' "$BASELINE" > .current-model-id
-                    echo 'Protection Test baseline model reference resolved (no Production values read).'
-                '''
-            }
-        }
-
         stage('Resolve Worker Artifact') {
             steps {
                 container('kubectl') {
@@ -572,16 +324,10 @@ PY
                             cat .retraining-worker-tag
                         )"
 
-                        # Preserve the standard config unless E2E mode was explicitly requested.
-                        set -- -f charts/sentinel/values-dev.yaml
-                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
-                            set -- "$@" -f charts/sentinel/values-e2e.yaml
-                        fi
-
                         helm template sentinel \
                           charts/sentinel \
                           --namespace sentinel-dev \
-                          "$@" \
+                          -f charts/sentinel/values-dev.yaml \
                           --set retraining.enabled=true \
                           --set retraining.validation.enabled=false \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
@@ -603,61 +349,6 @@ PY
                           > /dev/null
 
                         echo "Retraining Fetch Data Job rendered successfully."
-                    '''
-                }
-            }
-        }
-
-        stage('Verify E2E Fetch Isolation') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY == true }
-            }
-            steps {
-                container('python') {
-                    sh '''
-                        set -eu
-                        uv run --frozen python - <<'PYCODE'
-from pathlib import Path
-import os
-import yaml
-
-manifests = [
-    doc for doc in yaml.safe_load_all(
-        Path('retraining-fetch-job.yaml').read_text()
-    ) if doc
-]
-assert len(manifests) == 1, 'Expected exactly one E2E Fetch Job'
-job = manifests[0]
-assert job['kind'] == 'Job'
-assert job['metadata']['name'] == f"sentinel-retraining-fetch-{os.environ['BUILD_NUMBER']}"
-pod = job['spec']['template']['spec']
-assert pod.get('automountServiceAccountToken') is False
-assert len(pod['containers']) == 1
-container = pod['containers'][0]
-assert container['command'] == ['python', '-m', 'sentinel.retraining.fetch_data']
-repository = Path('.retraining-worker-repository').read_text().strip()
-tag = Path('.retraining-worker-tag').read_text().strip()
-assert container['image'] == f'{repository}:{tag}', 'Worker image differs from deployed image'
-assert 'envFrom' not in container
-variables = {entry['name']: entry for entry in container['env']}
-for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
-    assert variables[key] == {
-        'name': key,
-        'valueFrom': {'configMapKeyRef': {
-            'name': 'sentinel-retraining-e2e-db', 'key': key
-        }}
-    }, f'Incorrect E2E DB ConfigMap reference: {key}'
-for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
-    assert variables[key] == {
-        'name': key,
-        'valueFrom': {'secretKeyRef': {
-            'name': 'sentinel-retraining-e2e-db-credentials', 'key': key
-        }}
-    }, f'Incorrect E2E DB Secret reference: {key}'
-assert variables['RETRAINING_PIPELINE_NAME']['value'] == 'sentinel-retraining-e2e'
-assert variables['RETRAINING_MIN_NEW_ROWS']['value'].isdigit()
-print('PASS: Fetch Job is isolated to E2E database credentials and namespace')
-PYCODE
                     '''
                 }
             }
@@ -836,14 +527,6 @@ PYCODE
                         "${newRows}/${minimumNewRows} new rows."
                     )
 
-                    if ((params.E2E_PROTECTION_TEST_ONLY == true) && gateStatus != 'passed') {
-                        error("E2E Validation requires passing Data Gate, got ${gateStatus} (${newRows}/${minimumNewRows}).")
-                    }
-
-                    if (params.E2E_PROTECTION_TEST_ONLY == true && newRows != '1000') {
-                        error("Protection Test expected exactly 1000 new corrupted labels, got ${newRows}.")
-                    }
-
                     if (gateStatus == 'blocked') {
                         currentBuild.result = 'ABORTED'
 
@@ -882,15 +565,10 @@ PYCODE
                             cat .retraining-cutoff
                         )"
 
-                        set -- -f charts/sentinel/values-dev.yaml
-                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
-                            set -- "$@" -f charts/sentinel/values-e2e.yaml
-                        fi
-
                         helm template sentinel \
                           charts/sentinel \
                           --namespace sentinel-dev \
-                          "$@" \
+                          -f charts/sentinel/values-dev.yaml \
                           --set retraining.enabled=true \
                           --set retraining.validation.enabled=true \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
@@ -936,54 +614,6 @@ PYCODE
             }
         }
 
-
-        stage('Verify E2E Validation Isolation') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY == true }
-            }
-            steps {
-                container('python') {
-                    sh '''
-                        set -eu
-                        uv run --frozen python - <<'PYCODE'
-from pathlib import Path
-import os
-import yaml
-
-docs = [d for d in yaml.safe_load_all(
-    Path('retraining-validation-job.yaml').read_text()
-) if d is not None]
-assert len(docs) == 1
-job = docs[0]
-assert job['kind'] == 'Job'
-assert job['metadata']['name'] == f"sentinel-retraining-validation-{os.environ['BUILD_NUMBER']}"
-pod = job['spec']['template']['spec']
-assert pod.get('automountServiceAccountToken') is False
-assert len(pod['containers']) == 1
-container = pod['containers'][0]
-assert 'envFrom' not in container
-variables = {entry['name']: entry for entry in container['env']}
-for key in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
-    assert variables[key] == {
-        'name': key,
-        'valueFrom': {'configMapKeyRef': {
-            'name': 'sentinel-retraining-e2e-db', 'key': key
-        }}
-    }, f'Unsafe E2E Validation DB ConfigMap reference: {key}'
-for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
-    assert variables[key] == {
-        'name': key,
-        'valueFrom': {'secretKeyRef': {
-            'name': 'sentinel-retraining-e2e-db-credentials', 'key': key
-        }}
-    }, f'Unsafe E2E Validation credentials source: {key}'
-assert variables['RETRAINING_PIPELINE_NAME']['value'] == 'sentinel-retraining-e2e'
-print('PASS: E2E Validation Job isolation validated')
-PYCODE
-                    '''
-                }
-            }
-        }
 
         stage('Validate Training Data') {
             steps {
@@ -1086,35 +716,20 @@ PYCODE
                             cat .retraining-worker-tag
                         )"
 
-                        # Only the isolated Protection Test uses a separately built Train image.
-                        TRAIN_TAG="$WORKER_TAG"
-                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
-                            TRAIN_TAG="${E2E_PROTECTION_TRAIN_IMAGE_TAG:-}"
-                            case "$TRAIN_TAG" in
-                                ''|*[!0-9]*) echo 'Invalid Protection Test train image tag.' >&2; exit 1 ;;
-                            esac
-                        fi
-
                         RETRAINING_CUTOFF="$(
                             cat .retraining-cutoff
                         )"
 
-                        set -- -f charts/sentinel/values-dev.yaml
-                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
-                            set -- "$@" -f charts/sentinel/values-e2e.yaml \
-                              --set-string retraining.train.e2eProfile=e2e_fast
-                        fi
-
                         helm template sentinel \
                           charts/sentinel \
                           --namespace sentinel-dev \
-                          "$@" \
+                          -f charts/sentinel/values-dev.yaml \
                           --set retraining.enabled=true \
                           --set retraining.validation.enabled=false \
                           --set retraining.train.enabled=true \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
                           --set-string retraining.cutoff="${RETRAINING_CUTOFF}" \
-                          --set-string retraining.train.image.tag="${TRAIN_TAG}" \
+                          --set-string retraining.train.image.tag="${WORKER_TAG}" \
                           --show-only templates/retraining-train-job.yaml \
                           > retraining-train-job.yaml
 
@@ -1138,94 +753,18 @@ PYCODE
                         fi
 
                         case "$TRAIN_IMAGE" in
-                            *:"${TRAIN_TAG}")
+                            *:"${WORKER_TAG}")
                                 ;;
                             *)
                                 echo "Training image tag does not match the selected immutable tag."
                                 echo "Rendered training image: $TRAIN_IMAGE"
-                                echo "Expected immutable tag: $TRAIN_TAG"
+                                echo "Expected immutable tag: $WORKER_TAG"
                                 exit 1
                                 ;;
                         esac
 
                         echo "Using retraining image: $TRAIN_IMAGE"
                         echo "Retraining Train Job rendered successfully."
-                    '''
-                }
-            }
-        }
-
-        stage('Verify E2E Training Isolation') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY == true }
-            }
-            steps {
-                container('python') {
-                    sh '''
-                        set -eu
-                        uv run --frozen python - <<'PYCODE'
-from pathlib import Path
-import os
-import yaml
-
-configs = yaml.safe_load(Path('charts/sentinel/values-e2e.yaml').read_text())
-retraining = configs['retraining']
-assert retraining['pipelineName'] == 'sentinel-retraining-e2e'
-assert retraining['database'] == {
-    'configMapName': 'sentinel-retraining-e2e-db',
-    'credentialsSecretName': 'sentinel-retraining-e2e-db-credentials',
-}
-assert retraining['canaryPromotion']['enabled'] is False
-
-jobs = [d for d in yaml.safe_load_all(
-    Path('retraining-train-job.yaml').read_text()
-) if d is not None]
-assert len(jobs) == 1, 'Expected one isolated Train Job'
-job = jobs[0]
-assert job['apiVersion'] == 'batch/v1' and job['kind'] == 'Job'
-assert job['metadata']['name'] == f"sentinel-retraining-train-{os.environ['BUILD_NUMBER']}"
-pod = job['spec']['template']['spec']
-assert pod.get('automountServiceAccountToken') is False
-assert pod['restartPolicy'] == 'Never'
-assert len(pod['containers']) == 1
-container = pod['containers'][0]
-assert container['name'] == 'retraining-train'
-assert 'envFrom' not in container
-worker_tag = Path('.retraining-worker-tag').read_text().strip()
-assert worker_tag.isdigit(), 'Invalid deployed worker image tag'
-protection_tag = os.environ['E2E_PROTECTION_TRAIN_IMAGE_TAG'].strip()
-assert protection_tag.isdigit(), 'Invalid immutable Protection Test image tag'
-assert container['image'] == f'omer5628/sentinel-train:{protection_tag}', 'Wrong isolated Train image'
-
-variables = {entry['name']: entry for entry in container['env']}
-for name in ('POSTGRES_HOST', 'POSTGRES_PORT', 'POSTGRES_DB'):
-    assert variables[name]['valueFrom']['configMapKeyRef'] == {
-        'name': 'sentinel-retraining-e2e-db', 'key': name,
-    }, f'Unsafe E2E train ConfigMap for {name}'
-for name in ('POSTGRES_USER', 'POSTGRES_PASSWORD'):
-    assert variables[name]['valueFrom']['secretKeyRef'] == {
-        'name': 'sentinel-retraining-e2e-db-credentials', 'key': name,
-    }, f'Unsafe E2E train Secret for {name}'
-assert variables['RETRAINING_CUTOFF']['value'] == Path('.retraining-cutoff').read_text().strip()
-assert variables['RETRAINING_EXPERIMENT_NAME']['value'] == f"retraining-{os.environ['BUILD_NUMBER']}"
-assert variables['SENTINEL_TRAINING_PROFILE']['value'] == 'e2e_fast', 'Fast training profile must be E2E-only'
-for name in ('CLEARML_API_HOST', 'CLEARML_FILES_HOST', 'CLEARML_WEB_HOST'):
-    assert variables[name]['value'].strip(), f'Missing {name}'
-print('PASS: E2E Train Job database, image and experiment isolation validated')
-PYCODE
-                    '''
-                }
-                container('kubectl') {
-                    sh '''
-                        set -eu
-                        NAMESPACE=sentinel-dev
-                        test "$(kubectl get configmap sentinel-retraining-e2e-db \
-                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_DB}')" = sentinel_e2e
-                        test "$(kubectl get secret sentinel-retraining-e2e-db-credentials \
-                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_USER}' | base64 -d)" = sentinel_e2e_user
-                        test "$(kubectl get configmap sentinel-retraining-e2e-db \
-                          -n "$NAMESPACE" -o jsonpath='{.data.POSTGRES_HOST}')" = \
-                          postgres-0.postgres-headless.sentinel-dev.svc.cluster.local
                     '''
                 }
             }
@@ -1300,22 +839,6 @@ PYCODE
                         error(
                             'Retraining Train Job failed.'
                         )
-                    }
-
-                    if (params.E2E_PROTECTION_TEST_ONLY == true) {
-                        sh '''
-                            set -eu
-                            grep -Fx 'Using training profile: e2e_fast' retraining-train.log >/dev/null
-                            grep -Fx 'Base samples: 1000' retraining-train.log >/dev/null
-                            grep -Fx 'Human-labeled samples: 1000' retraining-train.log >/dev/null
-                            grep -Fx 'Combined samples: 2000' retraining-train.log >/dev/null
-                            grep -F 'Epoch 1/1 |' retraining-train.log >/dev/null
-                            if grep -Eq 'Epoch [2-9][0-9]*/' retraining-train.log; then
-                                echo 'Protection Test: unexpected additional training epochs.' >&2
-                                exit 1
-                            fi
-                            echo 'PASS: e2e_fast used 1 epoch and exactly 1000 base + 1000 corrupted samples.'
-                        '''
                     }
 
                     echo(
@@ -1398,14 +921,6 @@ PYCODE
                             cat .retraining-worker-tag
                         )"
 
-                        GATEKEEPER_TAG="$WORKER_TAG"
-                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
-                            GATEKEEPER_TAG="${E2E_PROTECTION_TRAIN_IMAGE_TAG:-}"
-                            case "$GATEKEEPER_TAG" in
-                                ''|*[!0-9]*) echo 'Invalid Protection Test Gatekeeper image tag.' >&2; exit 1 ;;
-                            esac
-                        fi
-
                         if [ "$CURRENT_MODEL_ID" = "$CANDIDATE_MODEL_ID" ]; then
                             echo "Current and candidate model IDs are identical."
                             exit 1
@@ -1418,22 +933,17 @@ PYCODE
                                 ;;
                         esac
 
-                        set -- -f charts/sentinel/values-dev.yaml
-                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
-                            set -- "$@" -f charts/sentinel/values-e2e.yaml
-                        fi
-
                         helm template sentinel \
                           charts/sentinel \
                           --namespace sentinel-dev \
-                          "$@" \
+                          -f charts/sentinel/values-dev.yaml \
                           --set retraining.enabled=true \
                           --set retraining.validation.enabled=false \
                           --set retraining.gatekeeper.enabled=true \
                           --set-string retraining.runId="${BUILD_NUMBER}" \
                           --set-string retraining.gatekeeper.currentModelReference="${CURRENT_MODEL_ID}" \
                           --set-string retraining.gatekeeper.candidateModelReference="${CANDIDATE_MODEL_ID}" \
-                          --set-string retraining.gatekeeper.image.tag="${GATEKEEPER_TAG}" \
+                          --set-string retraining.gatekeeper.image.tag="${WORKER_TAG}" \
                           --show-only templates/retraining-gatekeeper-job.yaml \
                           > retraining-gatekeeper-job.yaml
 
@@ -1472,22 +982,15 @@ PYCODE
                         fi
 
                         case "$GATEKEEPER_IMAGE" in
-                            *:"${GATEKEEPER_TAG}")
+                            *:"${WORKER_TAG}")
                                 ;;
                             *)
                                 echo "Gatekeeper image tag does not match the selected immutable tag."
                                 echo "Rendered Gatekeeper image: $GATEKEEPER_IMAGE"
-                                echo "Expected immutable tag: $GATEKEEPER_TAG"
+                                echo "Expected immutable tag: $WORKER_TAG"
                                 exit 1
                                 ;;
                         esac
-
-                        if [ "${E2E_PROTECTION_TEST_ONLY:-false}" = 'true' ]; then
-                            test "$GATEKEEPER_IMAGE" = "omer5628/sentinel-train:${GATEKEEPER_TAG}" || {
-                                echo 'Protection Test refuses unexpected Gatekeeper image repository.' >&2
-                                exit 1
-                            }
-                        fi
 
                         echo "Using Gatekeeper image: $GATEKEEPER_IMAGE"
                         echo "Gatekeeper Job rendered successfully."
@@ -1631,51 +1134,6 @@ PYCODE
                         allowEmptyArchive: true
                     )
 
-                    if (params.E2E_PROTECTION_TEST_ONLY == true) {
-                        if (gatekeeperStatus == 0) {
-                            error('Protection Test FAILED: Gatekeeper accepted the corrupted-data candidate.')
-                        }
-                        def rejectionCheck = sh(
-                            script: '''
-                                set -eu
-                                python - <<'PYCODE'
-from decimal import Decimal, InvalidOperation
-from pathlib import Path
-log = Path('retraining-gatekeeper.log').read_text()
-items = {}
-for line in log.splitlines():
-    if '=' in line:
-        k, v = line.split('=', 1)
-        items[k] = v
-if items.get('gatekeeper_status') != 'failed' or items.get('gatekeeper_action') != 'REJECT':
-    raise SystemExit('Protection Test: Gatekeeper did not explicitly REJECT')
-expected_current = Path('.current-model-id').read_text().strip()
-expected_candidate = Path('.candidate-model-id').read_text().strip()
-if items.get('current_model_reference') != expected_current:
-    raise SystemExit('Protection Test: wrong baseline model reference')
-if items.get('candidate_model_reference') != expected_candidate:
-    raise SystemExit('Protection Test: wrong candidate model reference')
-try:
-    current = Decimal(items['current_score'])
-    candidate = Decimal(items['candidate_score'])
-except (KeyError, InvalidOperation):
-    raise SystemExit('Protection Test: missing or invalid model scores')
-if not (current.is_finite() and candidate.is_finite() and candidate < current):
-    raise SystemExit('Protection Test: candidate did not regress below baseline')
-print(f'PASS: Corrupted-data candidate REJECTED: baseline={current}, candidate={candidate}')
-print('PASS: No Canary, Git or checkpoint step is reachable in this test mode')
-PYCODE
-                            ''',
-                            returnStatus: true
-                        )
-                        if (rejectionCheck != 0) {
-                            error('Protection Test failed to prove strict Gatekeeper rejection and regression.')
-                        }
-                        echo('PASS: Protection Test reached strict Gatekeeper rejection; proceeding to automatic fixture cleanup.')
-                        currentBuild.result = 'ABORTED'
-                        error('E2E_PROTECTION_TEST_ONLY completed intentionally before any Canary, Git or checkpoint stage.')
-                    }
-
                     if (gatekeeperStatus != 0) {
                         error(
                             'Gatekeeper rejected the candidate model ' +
@@ -1693,9 +1151,6 @@ PYCODE
         }
 
         stage('Resolve Current Canary Reference') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 container('python') {
                     sh '''
@@ -1726,9 +1181,6 @@ PYCODE
         }
 
         stage('Preflight Git Synchronization') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 container('git') {
                     withCredentials([
@@ -1808,9 +1260,6 @@ ASKPASS
         }
 
         stage('Render Canary Promotion Job') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 container('helm') {
                     sh '''
@@ -1874,9 +1323,6 @@ ASKPASS
         }
 
         stage('Run Canary Promotion') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 script {
                     def promotionStatus
@@ -1952,9 +1398,6 @@ ASKPASS
         }
 
         stage('Update Canary Reference in Git') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 container('python') {
                     sh '''
@@ -2037,9 +1480,6 @@ ASKPASS
         }
 
         stage('Render Checkpoint Job') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 container('kubectl') {
                     sh '''
@@ -2124,9 +1564,6 @@ ASKPASS
         }
 
         stage('Update Checkpoint') {
-            when {
-                expression { params.E2E_PROTECTION_TEST_ONLY != true }
-            }
             steps {
                 script {
                     def checkpointStatus
@@ -2244,80 +1681,6 @@ ASKPASS
 
     post {
         always {
-            script {
-                if (params.E2E_PROTECTION_TEST_ONLY == true &&
-                    fileExists('.e2e-corrupted-seed-attempted')) {
-                    try {
-                        container('kubectl') {
-                            sh '''
-                                set -eu
-                                # Stop all possible test jobs before removing data.
-                                for item in \
-                                  "sentinel-retraining-gatekeeper-${BUILD_NUMBER}" \
-                                  "sentinel-retraining-train-${BUILD_NUMBER}" \
-                                  "sentinel-retraining-validation-${BUILD_NUMBER}" \
-                                  "sentinel-retraining-fetch-${BUILD_NUMBER}" \
-                                  sentinel-e2e-corrupted-seed; do
-                                    kubectl delete job "$item" \
-                                      -n sentinel-dev --ignore-not-found=true \
-                                      --wait=true --timeout=120s
-                                done
-                            '''
-                        }
-                        container('helm') {
-                            sh '''
-                                set -eu
-                                helm template sentinel charts/sentinel \
-                                  --namespace sentinel-dev \
-                                  -f charts/sentinel/values-dev.yaml \
-                                  -f charts/sentinel/values-e2e.yaml \
-                                  --set retraining.e2eCorruptedCleanup.enabled=true \
-                                  --show-only templates/retraining-e2e-corrupted-cleanup-job.yaml \
-                                  > retraining-e2e-corrupted-cleanup-job.yaml
-                                test -s retraining-e2e-corrupted-cleanup-job.yaml
-                            '''
-                        }
-                        container('kubectl') {
-                            sh '''
-                                set -eu
-                                NAME=sentinel-e2e-corrupted-cleanup
-                                if kubectl get job "$NAME" -n sentinel-dev >/dev/null 2>&1; then
-                                    echo 'Cleanup Job already exists; refusing to reuse it.' >&2
-                                    exit 1
-                                fi
-                                kubectl create -n sentinel-dev \
-                                  -f retraining-e2e-corrupted-cleanup-job.yaml
-                                if ! kubectl wait -n sentinel-dev \
-                                  --for=condition=complete "job/$NAME" --timeout=5m; then
-                                    kubectl logs -n sentinel-dev "job/$NAME" \
-                                      --all-containers=true > retraining-e2e-corrupted-cleanup.log 2>&1 || true
-                                    cat retraining-e2e-corrupted-cleanup.log || true
-                                    exit 1
-                                fi
-                                kubectl logs -n sentinel-dev "job/$NAME" \
-                                  --all-containers=true > retraining-e2e-corrupted-cleanup.log 2>&1
-                                cat retraining-e2e-corrupted-cleanup.log
-                                grep -Fx 'E2E corrupted cleanup completed successfully.' \
-                                  retraining-e2e-corrupted-cleanup.log >/dev/null
-                                kubectl delete job "$NAME" -n sentinel-dev \
-                                  --ignore-not-found=true --wait=true --timeout=120s
-                                echo 'PASS: Corrupted E2E training fixtures cleaned.'
-                            '''
-                        }
-                        archiveArtifacts(
-                            artifacts: 'retraining-e2e-corrupted-cleanup.log',
-                            fingerprint: true,
-                            allowEmptyArchive: true
-                        )
-                    } catch (Exception problem) {
-                        echo('CRITICAL: Corrupted E2E fixture cleanup failed. Do not rerun the test until sentinel_e2e is checked and cleaned through Jenkins.')
-                        echo("Cleanup error: ${problem}")
-                        writeFile(file: '.e2e-protection-cleanup-failed', text: 'true')
-                        currentBuild.result = 'FAILURE'
-                    }
-                }
-            }
-
             container('kubectl') {
                 sh '''
                     kubectl delete job \
@@ -2387,17 +1750,7 @@ ASKPASS
                 rm -f .retraining-cutoff
                 rm -f .retraining-new-rows
                 rm -f .retraining-minimum-new-rows
-                rm -f retraining-e2e-corrupted-seed-job.yaml
-                rm -f retraining-e2e-corrupted-seed.log
-                rm -f retraining-e2e-corrupted-cleanup-job.yaml
-                rm -f retraining-e2e-corrupted-cleanup.log
-                rm -f .e2e-corrupted-seed-attempted
             '''
-            script {
-                if (fileExists('.e2e-protection-cleanup-failed')) {
-                    error('CRITICAL: Protection Test cleanup failed. Inspect sentinel_e2e before any retry.')
-                }
-            }
         }
     }
 }

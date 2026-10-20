@@ -1,4 +1,0 @@
-# Fast functional tests only. Never use this profile for production retraining.
-training:
-  epochs: 1
-  max_base_samples: 1000

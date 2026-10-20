@@ -35,19 +35,6 @@
     .Values.retraining.clearml.webHost
 -}}
 
-{{- $e2eProfile := default "" .Values.retraining.gatekeeper.e2eProfile -}}
-{{- if $e2eProfile }}
-  {{- if ne $e2eProfile "e2e_pass" }}
-    {{- fail "Unsupported Gatekeeper E2E profile" }}
-  {{- end }}
-  {{- if ne .Release.Namespace "sentinel-dev" }}
-    {{- fail "Gatekeeper E2E profile is restricted to sentinel-dev" }}
-  {{- end }}
-  {{- if ne (default "" .Values.retraining.pipelineName) "sentinel-retraining-e2e" }}
-    {{- fail "Gatekeeper E2E profile requires the isolated retraining pipeline values" }}
-  {{- end }}
-{{- end }}
-
 apiVersion: batch/v1
 kind: Job
 
@@ -94,12 +81,6 @@ spec:
             - {{ $candidateModelReference | quote }}
 
           env:
-            {{- if $e2eProfile }}
-            - name: SENTINEL_GATEKEEPER_PROFILE
-              value: {{ $e2eProfile | quote }}
-            - name: SENTINEL_E2E_ONLY
-              value: "true"
-            {{- end }}
             - name: CLEARML_API_HOST
               value: {{ $clearmlApiHost | quote }}
 

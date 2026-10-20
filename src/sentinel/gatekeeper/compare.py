@@ -1,7 +1,7 @@
+
 import argparse
 from collections.abc import Sequence
 from dataclasses import dataclass
-import os
 from pathlib import Path
 
 from hydra import compose, initialize_config_dir
@@ -44,9 +44,7 @@ def _normalize_model_reference(
 ) -> str:
     """Normalize and validate one immutable model reference."""
 
-    normalized_reference = (
-        model_reference.strip()
-    )
+    normalized_reference = model_reference.strip()
 
     if not normalized_reference:
         raise ValueError(
@@ -63,29 +61,21 @@ def run_gatekeeper(
 ) -> GatekeeperRunResult:
     """Run the configured gatekeeper comparison."""
 
-    gatekeeper_config = (
-        load_gatekeeper_config(
-            cfg
-        )
-    )
+    gatekeeper_config = load_gatekeeper_config(cfg)
 
     if not gatekeeper_config.enabled:
         raise RuntimeError(
             "Gatekeeper is disabled."
         )
 
-    current_reference = (
-        _normalize_model_reference(
-            current_model_reference,
-            "Current model reference",
-        )
+    current_reference = _normalize_model_reference(
+        current_model_reference,
+        "Current model reference",
     )
 
-    candidate_reference = (
-        _normalize_model_reference(
-            candidate_model_reference,
-            "Candidate model reference",
-    )
+    candidate_reference = _normalize_model_reference(
+        candidate_model_reference,
+        "Candidate model reference",
     )
 
     if current_reference == candidate_reference:
@@ -94,51 +84,36 @@ def run_gatekeeper(
             "must be different."
         )
 
-    golden_set_adapter = (
-        load_golden_set_adapter(
-            gatekeeper_config
-            .golden_set_adapter_reference
-        )
+    golden_set_adapter = load_golden_set_adapter(
+        gatekeeper_config.golden_set_adapter_reference
     )
 
     samples = golden_set_adapter.load(
         gatekeeper_config.golden_set_path
     )
 
-    if (
-        len(samples)
-        != gatekeeper_config.required_samples
-    ):
+    if len(samples) != gatekeeper_config.required_samples:
         raise ValueError(
             "Golden dataset sample count does not "
             "match the configured requirement: "
-            f"expected "
-            f"{gatekeeper_config.required_samples}, "
+            f"expected {gatekeeper_config.required_samples}, "
             f"got {len(samples)}."
         )
 
-    artifact_resolver = (
-        load_model_artifact_resolver(
-            gatekeeper_config
-            .model_artifact_resolver_reference
-        )
+    artifact_resolver = load_model_artifact_resolver(
+        gatekeeper_config.model_artifact_resolver_reference
     )
 
-    current_local_reference = (
-        artifact_resolver.resolve(
-            current_reference
-        )
+    current_local_reference = artifact_resolver.resolve(
+        current_reference
     )
 
-    candidate_local_reference = (
-        artifact_resolver.resolve(
-            candidate_reference
-        )
-        )
+    candidate_local_reference = artifact_resolver.resolve(
+        candidate_reference
+    )
 
     model_adapter = load_model_adapter(
-        gatekeeper_config
-        .model_adapter_reference
+        gatekeeper_config.model_adapter_reference
     )
 
     metric = get_metric(
@@ -147,12 +122,8 @@ def run_gatekeeper(
 
     comparison = compare_models(
         model_adapter=model_adapter,
-        current_model_reference=(
-            current_local_reference
-        ),
-        candidate_model_reference=(
-            candidate_local_reference
-        ),
+        current_model_reference=current_local_reference,
+        candidate_model_reference=candidate_local_reference,
         samples=samples,
         metric=metric,
     )
@@ -163,25 +134,18 @@ def run_gatekeeper(
     )
 
     return GatekeeperRunResult(
-        current_model_reference=(
-            current_reference
-        ),
-        candidate_model_reference=(
-            candidate_reference
-        ),
+        current_model_reference=current_reference,
+        candidate_model_reference=candidate_reference,
         comparison=comparison,
         decision=decision,
     )
 
 
 def _load_hydra_config() -> DictConfig:
-    """Compose the default or an explicitly gated E2E configuration."""
+    """Compose the default Hydra configuration."""
 
     config_dir = (
-        Path(__file__)
-        .resolve()
-        .parents[3]
-        / "conf"
+        Path(__file__).resolve().parents[3] / "conf"
     )
 
     if not config_dir.is_dir():
@@ -191,32 +155,12 @@ def _load_hydra_config() -> DictConfig:
             f"{config_dir}"
         )
 
-    profile = os.getenv(
-        "SENTINEL_GATEKEEPER_PROFILE", ""
-    ).strip()
-
-    overrides: list[str] = []
-    if profile:
-        if profile != "e2e_pass":
-            raise ValueError(
-                "Unsupported Gatekeeper profile."
-            )
-        if os.getenv("SENTINEL_E2E_ONLY") != "true":
-            raise RuntimeError(
-                "E2E Gatekeeper profile requires isolated E2E mode."
-            )
-
-        overrides.append("gatekeeper=e2e_pass")
-
     with initialize_config_dir(
         version_base=None,
-        config_dir=str(
-            config_dir
-        ),
+        config_dir=str(config_dir),
     ):
         cfg = compose(
             config_name="config",
-            overrides=overrides,
         )
 
     return cfg
@@ -321,9 +265,7 @@ def main(
 
     parser = _build_argument_parser()
 
-    args = parser.parse_args(
-        argv
-    )
+    args = parser.parse_args(argv)
 
     try:
         cfg = _load_hydra_config()
@@ -348,9 +290,7 @@ def main(
 
         return 2
 
-    _print_result(
-        result
-    )
+    _print_result(result)
 
     return (
         0
@@ -360,6 +300,4 @@ def main(
 
 
 if __name__ == "__main__":
-    raise SystemExit(
-        main()
-    )
+    raise SystemExit(main())

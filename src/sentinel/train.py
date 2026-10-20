@@ -1,3 +1,4 @@
+
 from collections.abc import Mapping
 from datetime import datetime
 from io import BytesIO
@@ -29,6 +30,7 @@ from sentinel.retraining.human_data import (
 from sentinel.retraining.holdout import (
     apply_holdout_filter,
 )
+
 
 IMAGE_WIDTH = 28
 IMAGE_HEIGHT = 28
@@ -83,9 +85,7 @@ def load_tensor_dataset(
 ) -> TensorDataset:
     """Load MNIST CSV data using the shared preprocessing function."""
 
-    dataframe = pd.read_csv(
-        dataset_file
-    )
+    dataframe = pd.read_csv(dataset_file)
 
     if dataframe.empty:
         raise ValueError(
@@ -121,9 +121,7 @@ def load_tensor_dataset(
         assert holdout_id_field is not None
         assert holdout_filter_reference is not None
 
-        original_sample_count = len(
-            dataframe
-        )
+        original_sample_count = len(dataframe)
 
         dataframe = apply_holdout_filter(
             dataframe=dataframe,
@@ -132,37 +130,40 @@ def load_tensor_dataset(
             filter_reference=holdout_filter_reference,
         )
 
+        print("Applied immutable training holdout:")
         print(
-            "Applied immutable training holdout:"
-        )
-
-        print(
-            f"Base samples before holdout: "
+            "Base samples before holdout: "
             f"{original_sample_count}"
         )
-
         print(
-            f"Base samples after holdout: "
+            "Base samples after holdout: "
             f"{len(dataframe)}"
         )
-
         print(
-            f"Excluded holdout samples: "
+            "Excluded holdout samples: "
             f"{original_sample_count - len(dataframe)}"
         )
 
     if max_samples is not None:
         if not isinstance(max_samples, int) or max_samples <= 0:
-            raise ValueError("max_samples must be a positive integer.")
+            raise ValueError(
+                "max_samples must be a positive integer."
+            )
 
-        selected_count = min(max_samples, len(dataframe))
+        selected_count = min(
+            max_samples,
+            len(dataframe),
+        )
+
         if selected_count < len(dataframe):
             dataframe = dataframe.sample(
                 n=selected_count,
                 random_state=sample_seed,
             ).reset_index(drop=True)
 
-        print(f"Base samples selected for training: {len(dataframe)}")
+        print(
+            f"Base samples selected for training: {len(dataframe)}"
+        )
 
     label_column = next(
         (
@@ -294,6 +295,7 @@ def apply_retraining_runtime_config(
 
     return cfg
 
+
 def combine_tensor_datasets(
     base_dataset: TensorDataset,
     human_dataset: TensorDataset,
@@ -358,9 +360,7 @@ def add_human_retraining_data(
 ) -> TensorDataset:
     """Add eligible human-labeled data when retraining is configured."""
 
-    cutoff = (
-        get_retraining_cutoff_from_environment()
-    )
+    cutoff = get_retraining_cutoff_from_environment()
 
     if cutoff is None:
         print(
@@ -380,9 +380,7 @@ def add_human_retraining_data(
             "when RETRAINING_CUTOFF is configured."
         )
 
-    base_images, _ = (
-        base_dataset.tensors
-    )
+    base_images, _ = base_dataset.tensors
 
     expected_sample_shape = tuple(
         int(dimension)
@@ -398,16 +396,12 @@ def add_human_retraining_data(
     )
 
     try:
-        human_dataset = (
-            load_human_labeled_dataset(
-                connection,
-                cutoff=cutoff,
-                discard_label=discard_label.strip(),
-                expected_sample_shape=(
-                    expected_sample_shape
-                ),
-                label_to_index=CLASS_LABELS,
-            )
+        human_dataset = load_human_labeled_dataset(
+            connection,
+            cutoff=cutoff,
+            discard_label=discard_label.strip(),
+            expected_sample_shape=expected_sample_shape,
+            label_to_index=CLASS_LABELS,
         )
     finally:
         connection.close()
@@ -417,25 +411,11 @@ def add_human_retraining_data(
         human_dataset,
     )
 
-    print(
-        "Retraining dataset prepared:"
-    )
-
-    print(
-        f"Base samples: {len(base_dataset)}"
-    )
-
-    print(
-        f"Human-labeled samples: {len(human_dataset)}"
-    )
-
-    print(
-        f"Combined samples: {len(combined_dataset)}"
-    )
-
-    print(
-        f"Retraining cutoff: {cutoff.isoformat()}"
-    )
+    print("Retraining dataset prepared:")
+    print(f"Base samples: {len(base_dataset)}")
+    print(f"Human-labeled samples: {len(human_dataset)}")
+    print(f"Combined samples: {len(combined_dataset)}")
+    print(f"Retraining cutoff: {cutoff.isoformat()}")
 
     return combined_dataset
 
@@ -793,16 +773,20 @@ def train(cfg: DictConfig) -> None:
     )
 
     max_base_samples = OmegaConf.select(
-        cfg, "training.max_base_samples", default=None
+        cfg,
+        "training.max_base_samples",
+        default=None,
     )
+
     if max_base_samples is not None:
         max_base_samples = int(max_base_samples)
-        if max_base_samples <= 0:
-            raise ValueError("training.max_base_samples must be positive.")
 
-    retraining_cutoff = (
-        get_retraining_cutoff_from_environment()
-    )
+        if max_base_samples <= 0:
+            raise ValueError(
+                "training.max_base_samples must be positive."
+            )
+
+    retraining_cutoff = get_retraining_cutoff_from_environment()
 
     if retraining_cutoff is None:
         base_tensor_dataset = load_tensor_dataset(
@@ -1014,25 +998,6 @@ def main() -> None:
         cfg = compose(
             config_name="config",
         )
-
-    profile_name = os.getenv("SENTINEL_TRAINING_PROFILE", "").strip()
-    if profile_name:
-        if profile_name != "e2e_fast":
-            raise ValueError("Unsupported training profile.")
-        if not get_retraining_cutoff_from_environment():
-            raise ValueError("The e2e_fast profile requires a retraining cutoff.")
-        profile_file = config_dir / "profiles" / f"{profile_name}.yaml"
-        if not profile_file.is_file():
-            raise FileNotFoundError(f"Training profile not found: {profile_file}")
-        profile_config = OmegaConf.load(profile_file)
-        if OmegaConf.select(profile_config, "training.epochs") is None:
-            raise ValueError("Training profile must define training.epochs.")
-        if OmegaConf.select(profile_config, "training.max_base_samples") is None:
-            raise ValueError("Training profile must define training.max_base_samples.")
-        OmegaConf.set_struct(cfg, False)
-        cfg = OmegaConf.merge(cfg, profile_config)
-        OmegaConf.set_struct(cfg, True)
-        print(f"Using training profile: {profile_name}")
 
     cfg = apply_retraining_runtime_config(
         cfg

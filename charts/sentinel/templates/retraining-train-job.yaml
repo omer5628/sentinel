@@ -40,11 +40,6 @@
     .Values.retraining.database.credentialsSecretName
 -}}
 
-{{- $trainingProfile := default "" .Values.retraining.train.e2eProfile -}}
-{{- if and $trainingProfile (ne $trainingProfile "e2e_fast") }}
-{{- fail "Only the e2e_fast training profile is supported" }}
-{{- end }}
-
 apiVersion: batch/v1
 kind: Job
 
@@ -80,10 +75,6 @@ spec:
           imagePullPolicy: {{ .Values.retraining.train.image.pullPolicy }}
 
           env:
-            {{- if $trainingProfile }}
-            - name: SENTINEL_TRAINING_PROFILE
-              value: {{ $trainingProfile | quote }}
-            {{- end }}
             - name: POSTGRES_HOST
               valueFrom:
                 configMapKeyRef:
