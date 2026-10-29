@@ -125,6 +125,20 @@ worker:
   autoInference:
     enabled: false
 
+  # Worker-only runtime settings.
+  # Queue names must remain synchronized with the Producer.
+  runtime:
+    queueName: "video_stream"
+    deadLetterExchange: "sentinel.dlx"
+    deadLetterQueue: "video_stream.dlq"
+    deadLetterRoutingKey: "video_stream.invalid"
+
+    featureTtlSeconds: 3600
+    prefetchCount: 1
+
+    rabbitmqHeartbeat: 60
+    rabbitmqBlockedTimeout: 30
+
   image:
     repository: omer5628/sentinel-worker
     tag: "v1.1"
@@ -157,7 +171,7 @@ prometheus:
 
   image:
     repository: prom/prometheus
-    tag: "latest"
+    tag: "v3.10.0"
     pullPolicy: IfNotPresent
 
   scrapeInterval: "15s"
@@ -178,7 +192,7 @@ alertmanager:
 
   image:
     repository: prom/alertmanager
-    tag: "latest"
+    tag: "v0.28.1"
     pullPolicy: IfNotPresent
 
   service:
@@ -203,7 +217,7 @@ grafana:
 
   image:
     repository: grafana/grafana
-    tag: "latest"
+    tag: "13.0.10-ubuntu"
     pullPolicy: IfNotPresent
 
   service:
@@ -230,7 +244,7 @@ jaeger:
 
   image:
     repository: jaegertracing/all-in-one
-    tag: "latest"
+    tag: "1.71.0"
     pullPolicy: Always
 
   service:
@@ -246,7 +260,7 @@ loki:
 
   image:
     repository: grafana/loki
-    tag: "latest"
+    tag: "3.5.12"
     pullPolicy: IfNotPresent
 
   service:
@@ -260,7 +274,7 @@ loki:
 promtail:
   image:
     repository: grafana/promtail
-    tag: "latest"
+    tag: "3.5"
     pullPolicy: IfNotPresent
 
   serverPort: 9080

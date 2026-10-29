@@ -97,11 +97,26 @@ if ! helm plugin list | awk 'NR > 1 {print $1}' | \
     helm plugin install "$POST_RENDERER_DIR"
 fi
 
-echo "Deploying ClearML Serving..."
+# Use the vendored chart by default so no public Helm repository is required.
+# An explicit remote chart reference remains available for connected environments.
+HELM_CHART_REF="${CLEARML_SERVING_CHART_REF:-${REPO_ROOT}/charts/vendor/clearml-serving}"
+CHART_VERSION_ARGS=()
 
-helm upgrade --install clearml-serving clearml/clearml-serving \
+if [[ -d "$HELM_CHART_REF" ]]; then
+    if [[ ! -f "$HELM_CHART_REF/Chart.yaml" ]]; then
+        echo "ERROR: Local Helm chart is missing Chart.yaml: $HELM_CHART_REF" >&2
+        exit 1
+    fi
+else
+    # Preserve the existing pinned chart version for remote references.
+    CHART_VERSION_ARGS=(--version 1.6.2)
+fi
+
+echo "Deploying ClearML Serving using chart: $HELM_CHART_REF"
+
+helm upgrade --install clearml-serving "$HELM_CHART_REF" \
     --namespace default \
-    --version 1.6.2 \
+    "${CHART_VERSION_ARGS[@]}" \
     -f "$REPO_ROOT/serving/values-sentinel.yaml" \
     --set-string clearml.servingTaskId="$SERVING_TASK_ID" \
     --set-string clearml.apiHost="$API_HOST" \

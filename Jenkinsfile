@@ -1,3 +1,4 @@
+
 pipeline {
     agent {
         kubernetes {
@@ -10,7 +11,8 @@ spec:
 
   containers:
     - name: python
-      image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+      image: sentinel-jenkins-python:py311-uv0.13.4
+      imagePullPolicy: Never
       command:
         - cat
       tty: true
@@ -24,6 +26,7 @@ spec:
 
     - name: buildkit
       image: moby/buildkit:v0.32.2-rootless
+      imagePullPolicy: Never
       command:
         - sh
         - -c
@@ -49,11 +52,19 @@ spec:
 
     - name: trivy
       image: aquasec/trivy:0.74.0
+      imagePullPolicy: Never
       command:
         - sh
         - -c
       args:
         - sleep infinity
+      volumeMounts:
+        - name: trivy-cache
+          mountPath: /cache
+        - name: trivy-db
+          mountPath: /cache/db
+          subPath: db
+          readOnly: true
       resources:
         requests:
           cpu: 250m
@@ -64,6 +75,7 @@ spec:
 
     - name: skopeo
       image: quay.io/skopeo/stable:latest
+      imagePullPolicy: Never
       command:
         - sh
         - -c
@@ -79,6 +91,7 @@ spec:
 
     - name: helm
       image: alpine/helm:3.18.6
+      imagePullPolicy: Never
       command:
         - sh
         - -c
@@ -94,6 +107,7 @@ spec:
 
     - name: kubectl
       image: alpine/k8s:1.35.8
+      imagePullPolicy: Never
       command:
         - sh
         - -c
@@ -112,6 +126,12 @@ spec:
           readOnly: true
 
   volumes:
+    - name: trivy-cache
+      emptyDir: {}
+    - name: trivy-db
+      persistentVolumeClaim:
+        claimName: sentinel-trivy-db
+        readOnly: true
     - name: alertmanager-jenkins-credentials
       secret:
         secretName: sentinel-alertmanager-credentials
@@ -120,6 +140,14 @@ spec:
             path: password
 '''
         }
+    }
+
+    parameters {
+        choice(
+            name: 'IMAGE_DELIVERY_MODE',
+            choices: ['archive_only', 'dockerhub'],
+            description: 'archive_only: archive without publishing or deploying; dockerhub: legacy CI/CD.'
+        )
     }
 
     options {
@@ -211,6 +239,12 @@ spec:
                 container('trivy') {
                     sh '''
                         trivy image \
+                        --cache-dir /cache \
+                        --skip-db-update \
+                        --skip-java-db-update \
+                        --skip-check-update \
+                        --skip-version-check \
+                        --offline-scan \
                         --input sentinel-api.tar \
                         --scanners vuln \
                         --severity CRITICAL \
@@ -218,6 +252,12 @@ spec:
                         --ignorefile .trivyignore.yaml
 
                         trivy image \
+                        --cache-dir /cache \
+                        --skip-db-update \
+                        --skip-java-db-update \
+                        --skip-check-update \
+                        --skip-version-check \
+                        --offline-scan \
                         --input sentinel-worker.tar \
                         --scanners vuln \
                         --severity CRITICAL \
@@ -225,6 +265,12 @@ spec:
                         --ignorefile .trivyignore.yaml
 
                         trivy image \
+                        --cache-dir /cache \
+                        --skip-db-update \
+                        --skip-java-db-update \
+                        --skip-check-update \
+                        --skip-version-check \
+                        --offline-scan \
                         --input sentinel-train.tar \
                         --scanners vuln \
                         --severity CRITICAL \
@@ -232,6 +278,12 @@ spec:
                         --ignorefile .trivyignore.yaml
 
                         trivy image \
+                        --cache-dir /cache \
+                        --skip-db-update \
+                        --skip-java-db-update \
+                        --skip-check-update \
+                        --skip-version-check \
+                        --offline-scan \
                         --input sentinel-validator.tar \
                         --scanners vuln \
                         --severity CRITICAL \
@@ -242,7 +294,26 @@ spec:
             }
         }
 
+        stage('Archive Images') {
+            when {
+                expression {
+                    params.IMAGE_DELIVERY_MODE == 'archive_only'
+                }
+            }
+            steps {
+                archiveArtifacts(
+                    artifacts: 'sentinel-api.tar,sentinel-worker.tar,sentinel-train.tar,sentinel-validator.tar',
+                    fingerprint: true
+                )
+            }
+        }
+
         stage('Push Images') {
+            when {
+                expression {
+                    params.IMAGE_DELIVERY_MODE == 'dockerhub'
+                }
+            }
             steps {
                 container('skopeo') {
                     withCredentials([
@@ -281,6 +352,11 @@ spec:
         }
 
         stage('Integration Test') {
+            when {
+                expression {
+                    params.IMAGE_DELIVERY_MODE == 'dockerhub'
+                }
+            }
             steps {
                 sh '''
                     INTEGRATION_API_IMAGE="omer5628/sentinel-api:${BUILD_NUMBER}" \
@@ -293,6 +369,11 @@ spec:
         }
 
         stage('Sync AlertManager Credentials') {
+            when {
+                expression {
+                    params.IMAGE_DELIVERY_MODE == 'dockerhub'
+                }
+            }
             steps {
                 container('kubectl') {
                     sh '''
@@ -332,6 +413,11 @@ spec:
         }
 
         stage('Deploy Dev') {
+            when {
+                expression {
+                    params.IMAGE_DELIVERY_MODE == 'dockerhub'
+                }
+            }
             steps {
                 container('helm') {
                     sh '''
@@ -349,6 +435,11 @@ spec:
         }
 
         stage('Promote to Prod?') {
+            when {
+                expression {
+                    params.IMAGE_DELIVERY_MODE == 'dockerhub'
+                }
+            }
             steps {
                 input(
                     message: 'Deploy to Production?',
@@ -358,6 +449,11 @@ spec:
         }
 
         stage('Deploy Prod') {
+            when {
+                expression {
+                    params.IMAGE_DELIVERY_MODE == 'dockerhub'
+                }
+            }
             steps {
                 container('helm') {
                     sh '''

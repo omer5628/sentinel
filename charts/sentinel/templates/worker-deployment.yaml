@@ -43,6 +43,32 @@ spec:
             - name: AUTO_INFERENCE_ENABLED
               value: {{ .Values.worker.autoInference.enabled | quote }}
 
+            # Worker runtime configuration
+            - name: WORKER_QUEUE_NAME
+              value: {{ .Values.worker.runtime.queueName | quote }}
+
+            - name: WORKER_DEAD_LETTER_EXCHANGE
+              value: {{ .Values.worker.runtime.deadLetterExchange | quote }}
+
+            - name: WORKER_DEAD_LETTER_QUEUE
+              value: {{ .Values.worker.runtime.deadLetterQueue | quote }}
+
+            - name: WORKER_DEAD_LETTER_ROUTING_KEY
+              value: {{ .Values.worker.runtime.deadLetterRoutingKey | quote }}
+
+            - name: WORKER_FEATURE_TTL_SECONDS
+              value: {{ .Values.worker.runtime.featureTtlSeconds | quote }}
+
+            - name: WORKER_PREFETCH_COUNT
+              value: {{ .Values.worker.runtime.prefetchCount | quote }}
+
+            - name: WORKER_RABBITMQ_HEARTBEAT
+              value: {{ .Values.worker.runtime.rabbitmqHeartbeat | quote }}
+
+            - name: WORKER_RABBITMQ_BLOCKED_TIMEOUT
+              value: {{ .Values.worker.runtime.rabbitmqBlockedTimeout | quote }}
+
+            # RabbitMQ connection
             - name: RABBITMQ_HOST
               valueFrom:
                 configMapKeyRef:
@@ -55,6 +81,7 @@ spec:
                   name: sentinel-common-config
                   key: RABBITMQ_PORT
 
+            # Redis connection
             - name: REDIS_HOST
               valueFrom:
                 configMapKeyRef:
@@ -67,6 +94,7 @@ spec:
                   name: sentinel-common-config
                   key: REDIS_PORT
 
+            # PostgreSQL connection
             - name: POSTGRES_HOST
               valueFrom:
                 configMapKeyRef:
@@ -85,6 +113,7 @@ spec:
                   name: sentinel-common-config
                   key: POSTGRES_DB
 
+            # Credentials from Kubernetes Secrets
             - name: RABBITMQ_USERNAME
               valueFrom:
                 secretKeyRef:

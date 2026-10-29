@@ -1,0 +1,1 @@
+_target_: sentinel.adapters.mnist_preprocessing.MNISTImagePreprocessor

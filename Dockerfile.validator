@@ -1,4 +1,9 @@
-FROM python:3.11-slim AS builder
+ARG PYTHON_BASE_IMAGE=python:3.11
+ARG UV_TOOL_IMAGE=ghcr.io/astral-sh/uv:python3.10-alpine
+
+FROM ${UV_TOOL_IMAGE} AS uv-source
+
+FROM ${PYTHON_BASE_IMAGE} AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -7,7 +12,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=uv-source /usr/local/bin/uv /usr/local/bin/uv
 
 COPY pyproject.toml uv.lock ./
 
@@ -17,8 +22,7 @@ RUN uv sync \
     --no-install-project \
     --no-editable
 
-
-FROM python:3.11-slim AS runtime
+FROM ${PYTHON_BASE_IMAGE} AS runtime
 
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/app/src" \
@@ -27,16 +31,30 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system sentinel \
+RUN groupadd --system sentinel \
     && useradd \
         --system \
         --gid sentinel \
         --home-dir /app \
         --no-create-home \
         sentinel
+
+# Remove Debian development packages and unneeded runtime packages
+# from the final image after dependency installation occurs in builder.
+# These removals were validated with the Validator smoke test and an
+# offline Trivy scan. Recheck if runtime dependencies change.
+RUN apt-get purge -y \
+      libmariadb-dev \
+      libmariadb-dev-compat \
+      libopenexr-dev \
+      libxml2-dev \
+      linux-libc-dev \
+      libmariadb3 \
+      mariadb-common \
+      libopenexr-3-1-30 \
+      libxml2 \
+      openssh-client \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 COPY --from=builder /opt/venv /opt/venv
 COPY src/ ./src/

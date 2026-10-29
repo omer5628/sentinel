@@ -10,7 +10,7 @@ spec:
 
   containers:
     - name: python
-      image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+      image: sentinel-jenkins-python:py311-uv0.13.4
       command:
         - cat
       tty: true

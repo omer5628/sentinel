@@ -1,0 +1,74 @@
+
+# Sentinel - Offline Kubernetes image configuration
+#
+# Use only images already present on Kubernetes nodes.
+# No container registry pulls are allowed.
+#
+# Image repositories and tags can be overridden separately
+# when migrating to an internal JFrog registry.
+#
+# Usage:
+# helm template sentinel charts/sentinel \
+#   -f charts/sentinel/values-dev.yaml \
+#   -f charts/sentinel/values-offline.yaml
+
+api:
+  image:
+    pullPolicy: Never
+
+worker:
+  image:
+    pullPolicy: Never
+
+rabbitmq:
+  image:
+    pullPolicy: Never
+
+redis:
+  image:
+    pullPolicy: Never
+
+postgres:
+  image:
+    pullPolicy: Never
+
+prometheus:
+  image:
+    pullPolicy: Never
+
+alertmanager:
+  image:
+    pullPolicy: Never
+
+grafana:
+  image:
+    pullPolicy: Never
+
+jaeger:
+  image:
+    pullPolicy: Never
+
+loki:
+  image:
+    pullPolicy: Never
+
+promtail:
+  image:
+    pullPolicy: Never
+
+retraining:
+  validation:
+    image:
+      pullPolicy: Never
+
+  train:
+    image:
+      pullPolicy: Never
+
+  gatekeeper:
+    image:
+      pullPolicy: Never
+
+  canaryPromotion:
+    image:
+      pullPolicy: Never

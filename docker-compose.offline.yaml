@@ -1,0 +1,16 @@
+# Offline Docker Compose configuration for Sentinel.
+# Images must already exist in the local Docker image store.
+# No image pulls from public registries.
+
+services:
+  rabbitmq:
+    image: ${SENTINEL_RABBITMQ_IMAGE:-rabbitmq:3-management}
+    pull_policy: never
+
+  redis:
+    image: ${SENTINEL_REDIS_IMAGE:-redis:7-alpine}
+    pull_policy: never
+
+  postgres:
+    image: ${SENTINEL_POSTGRES_IMAGE:-postgres:16-alpine}
+    pull_policy: never

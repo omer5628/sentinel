@@ -1,56 +1,66 @@
-import base64
-import binascii
-import json
 import logging
 import os
-from typing import Any
+from functools import partial
 
-import pika
 import psycopg2
-import redis
-import torch
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import Basic, BasicProperties
-from psycopg2.extensions import connection as PostgreSQLConnection
-from pydantic import ValidationError
 from redis import Redis
 
-from sentinel.features import preprocess_image
-from sentinel.schema.v1 import (
-    ImageMessageV1,
-    InferenceRequestV1,
+from sentinel.adapters.preprocessor_factory import (
+    Preprocessor,
+    create_preprocessor,
 )
+from sentinel.features import preprocess_image
+from sentinel.schema.v1 import ImageMessageV1 as ImageMessageV1
 
 from sentinel.consumers.inference_requests import (
     InferenceRequestPublisher,
 )
+from sentinel.consumers.worker_messaging import (
+    DEAD_LETTER_EXCHANGE as DEAD_LETTER_EXCHANGE,
+    DEAD_LETTER_QUEUE as DEAD_LETTER_QUEUE,
+    DEAD_LETTER_ROUTING_KEY as DEAD_LETTER_ROUTING_KEY,
+    DEFAULT_RABBITMQ_HOST as DEFAULT_RABBITMQ_HOST,
+    DEFAULT_RABBITMQ_PASSWORD as DEFAULT_RABBITMQ_PASSWORD,
+    DEFAULT_RABBITMQ_PORT as DEFAULT_RABBITMQ_PORT,
+    DEFAULT_RABBITMQ_USERNAME as DEFAULT_RABBITMQ_USERNAME,
+    QUEUE_NAME as QUEUE_NAME,
+    create_rabbitmq_connection as create_rabbitmq_connection,
+    declare_rabbitmq_topology as declare_rabbitmq_topology,
+    reject_invalid_message as reject_invalid_message,
+    retry_message as retry_message,
+)
+from sentinel.consumers.worker_storage import (
+    DEFAULT_POSTGRES_DATABASE as DEFAULT_POSTGRES_DATABASE,
+    DEFAULT_POSTGRES_HOST as DEFAULT_POSTGRES_HOST,
+    DEFAULT_POSTGRES_PASSWORD as DEFAULT_POSTGRES_PASSWORD,
+    DEFAULT_POSTGRES_PORT as DEFAULT_POSTGRES_PORT,
+    DEFAULT_POSTGRES_USERNAME as DEFAULT_POSTGRES_USERNAME,
+    DEFAULT_REDIS_HOST as DEFAULT_REDIS_HOST,
+    DEFAULT_REDIS_PORT as DEFAULT_REDIS_PORT,
+    FEATURE_TTL_SECONDS as FEATURE_TTL_SECONDS,
+    MODEL_VERSION as MODEL_VERSION,
+    PostgresWriter as PostgresWriter,
+    create_postgres_connection as create_postgres_connection,
+    create_redis_client as create_redis_client,
+    tensor_to_json as tensor_to_json,
+    write_to_redis as write_to_redis,
+)
+from sentinel.consumers.worker_config import WorkerConfig
+from sentinel.consumers.worker_processing import (
+    ProcessingCallbacks,
+    process_message as _process_message,
+)
+from sentinel.consumers.worker_message_contract import (
+    SUPPORTED_SCHEMA_VERSION,
+    decode_image,
+    deserialize_message,
+    extract_schema_version as extract_schema_version,
+)
 
-
-QUEUE_NAME = "video_stream"
-
-DEAD_LETTER_EXCHANGE = "sentinel.dlx"
-DEAD_LETTER_QUEUE = "video_stream.dlq"
-DEAD_LETTER_ROUTING_KEY = "video_stream.invalid"
 
 SCHEMA_NAME = "image_message"
-SUPPORTED_SCHEMA_VERSION = "v1"
-
-FEATURE_TTL_SECONDS = 3600
-MODEL_VERSION = "v1"
-
-DEFAULT_RABBITMQ_HOST = "localhost"
-DEFAULT_RABBITMQ_PORT = 5672
-DEFAULT_RABBITMQ_USERNAME = "sentinel"
-DEFAULT_RABBITMQ_PASSWORD = "sentinel"
-
-DEFAULT_REDIS_HOST = "localhost"
-DEFAULT_REDIS_PORT = 6379
-
-DEFAULT_POSTGRES_HOST = "localhost"
-DEFAULT_POSTGRES_PORT = 5432
-DEFAULT_POSTGRES_DATABASE = "sentinel"
-DEFAULT_POSTGRES_USERNAME = "sentinel"
-DEFAULT_POSTGRES_PASSWORD = "sentinel"
 
 AUTO_INFERENCE_ENABLED_ENV = "AUTO_INFERENCE_ENABLED"
 
@@ -61,6 +71,7 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
 
 def is_auto_inference_enabled() -> bool:
     """Return whether automatic inference is enabled."""
@@ -76,89 +87,6 @@ def is_auto_inference_enabled() -> bool:
         "yes",
         "on",
     }
-
-
-def create_rabbitmq_connection() -> pika.BlockingConnection:
-    """Create a connection to RabbitMQ."""
-
-    credentials = pika.PlainCredentials(
-        username=os.getenv(
-            "RABBITMQ_USERNAME",
-            DEFAULT_RABBITMQ_USERNAME,
-        ),
-        password=os.getenv(
-            "RABBITMQ_PASSWORD",
-            DEFAULT_RABBITMQ_PASSWORD,
-        ),
-    )
-
-    parameters = pika.ConnectionParameters(
-        host=os.getenv(
-            "RABBITMQ_HOST",
-            DEFAULT_RABBITMQ_HOST,
-        ),
-        port=int(
-            os.getenv(
-                "RABBITMQ_PORT",
-                str(DEFAULT_RABBITMQ_PORT),
-            )
-        ),
-        credentials=credentials,
-        heartbeat=60,
-        blocked_connection_timeout=30,
-    )
-
-    return pika.BlockingConnection(parameters)
-
-
-def create_redis_client() -> Redis:
-    """Create and verify a Redis connection."""
-
-    client = redis.Redis(
-        host=os.getenv(
-            "REDIS_HOST",
-            DEFAULT_REDIS_HOST,
-        ),
-        port=int(
-            os.getenv(
-                "REDIS_PORT",
-                str(DEFAULT_REDIS_PORT),
-            )
-        ),
-        decode_responses=False,
-    )
-
-    client.ping()
-    return client
-
-
-def create_postgres_connection() -> PostgreSQLConnection:
-    """Create a PostgreSQL connection."""
-
-    return psycopg2.connect(
-        host=os.getenv(
-            "POSTGRES_HOST",
-            DEFAULT_POSTGRES_HOST,
-        ),
-        port=int(
-            os.getenv(
-                "POSTGRES_PORT",
-                str(DEFAULT_POSTGRES_PORT),
-            )
-        ),
-        dbname=os.getenv(
-            "POSTGRES_DB",
-            DEFAULT_POSTGRES_DATABASE,
-        ),
-        user=os.getenv(
-            "POSTGRES_USER",
-            DEFAULT_POSTGRES_USERNAME,
-        ),
-        password=os.getenv(
-            "POSTGRES_PASSWORD",
-            DEFAULT_POSTGRES_PASSWORD,
-        ),
-    )
 
 
 def load_active_schema_versions() -> frozenset[str]:
@@ -193,236 +121,6 @@ def load_active_schema_versions() -> frozenset[str]:
     return active_versions
 
 
-def declare_rabbitmq_topology(channel: BlockingChannel) -> None:
-    """Declare the main queue and its dead-letter infrastructure."""
-
-    channel.exchange_declare(
-        exchange=DEAD_LETTER_EXCHANGE,
-        exchange_type="direct",
-        durable=True,
-    )
-
-    channel.queue_declare(
-        queue=DEAD_LETTER_QUEUE,
-        durable=True,
-    )
-
-    channel.queue_bind(
-        queue=DEAD_LETTER_QUEUE,
-        exchange=DEAD_LETTER_EXCHANGE,
-        routing_key=DEAD_LETTER_ROUTING_KEY,
-    )
-
-    channel.queue_declare(
-        queue=QUEUE_NAME,
-        durable=True,
-        arguments={
-            "x-dead-letter-exchange": DEAD_LETTER_EXCHANGE,
-            "x-dead-letter-routing-key": DEAD_LETTER_ROUTING_KEY,
-        },
-    )
-
-
-class PostgresWriter:
-    """Maintain a reusable PostgreSQL connection with reconnection support."""
-
-    def __init__(self) -> None:
-        self.connection: PostgreSQLConnection | None = None
-
-    def ensure_connection(self) -> PostgreSQLConnection:
-        """Return an active connection, reconnecting when necessary."""
-
-        if self.connection is None or self.connection.closed:
-            self.connection = create_postgres_connection()
-
-        return self.connection
-
-    def write(
-        self,
-        event_id: str,
-        image_id: str,
-        raw_image: bytes,
-        tensor: torch.Tensor,
-    ) -> None:
-        """Append one feature event to PostgreSQL."""
-
-        connection = self.ensure_connection()
-        vector_json = tensor_to_json(tensor)
-
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    INSERT INTO feature_log (
-                        event_id,
-                        image_id,
-                        raw_image,
-                        vector,
-                        model_version
-                    )
-                    VALUES (%s, %s, %s, %s::jsonb, %s)
-                    """,
-                    (
-                        event_id,
-                        image_id,
-                        psycopg2.Binary(raw_image),
-                        vector_json,
-                        MODEL_VERSION,
-                    ),
-                )
-
-            connection.commit()
-
-        except psycopg2.Error:
-            self._discard_connection()
-            raise
-
-    def _discard_connection(self) -> None:
-        """Close and discard a failed PostgreSQL connection."""
-
-        if self.connection is not None:
-            try:
-                self.connection.rollback()
-            except psycopg2.Error:
-                pass
-
-            try:
-                self.connection.close()
-            except psycopg2.Error:
-                pass
-
-        self.connection = None
-
-    def close(self) -> None:
-        """Close the active PostgreSQL connection."""
-
-        if self.connection is not None and not self.connection.closed:
-            self.connection.close()
-
-        self.connection = None
-
-
-def extract_schema_version(body: bytes) -> str:
-    """Extract the schema version from an incoming JSON message."""
-
-    try:
-        message: Any = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("Message body is not valid JSON.") from error
-
-    if not isinstance(message, dict):
-        raise ValueError("Message body must contain a JSON object.")
-
-    schema_version = message.get("schema_version")
-
-    if not isinstance(schema_version, str) or not schema_version:
-        raise ValueError(
-            "Message must contain a non-empty string field named "
-            "'schema_version'."
-        )
-
-    return schema_version
-
-
-def deserialize_message(
-    body: bytes,
-    active_schema_versions: frozenset[str],
-) -> ImageMessageV1:
-    """Select the schema version and validate an incoming message."""
-
-    schema_version = extract_schema_version(body)
-
-    if schema_version not in active_schema_versions:
-        raise ValueError(
-            f"Schema version '{schema_version}' is not active in "
-            f"the Schema Registry."
-        )
-
-    if schema_version != SUPPORTED_SCHEMA_VERSION:
-        raise ValueError(
-            f"Schema version '{schema_version}' is active but is not "
-            "supported by this Worker version."
-        )
-
-    try:
-        return ImageMessageV1.model_validate_json(body)
-    except ValidationError as error:
-        raise ValueError(
-            f"Message failed the ImageMessageV1 contract: {error}"
-        ) from error
-
-
-def decode_image(message: ImageMessageV1) -> bytes:
-    """Decode a Base64 image from a validated RabbitMQ message."""
-
-    try:
-        return base64.b64decode(
-            message.image_base64,
-            validate=True,
-        )
-    except (binascii.Error, ValueError) as error:
-        raise ValueError("The image is not valid Base64.") from error
-
-
-def tensor_to_json(tensor: torch.Tensor) -> str:
-    """Serialize a tensor as JSON for PostgreSQL storage."""
-
-    return json.dumps(tensor.detach().cpu().tolist())
-
-
-def write_to_redis(
-    redis_client: Redis,
-    image_id: str,
-    tensor: torch.Tensor,
-) -> None:
-    """Write the latest feature tensor to Redis."""
-
-    redis_key = f"feat:{image_id}"
-
-    redis_client.setex(
-        name=redis_key,
-        time=FEATURE_TTL_SECONDS,
-        value=tensor.detach().cpu().numpy().tobytes(),
-    )
-
-
-def reject_invalid_message(
-    channel: BlockingChannel,
-    delivery_tag: int,
-    error: Exception,
-) -> None:
-    """Reject an invalid message and route it to the dead-letter queue."""
-
-    logger.error(
-        "Rejected invalid message and routed it to DLQ '%s': %s",
-        DEAD_LETTER_QUEUE,
-        error,
-    )
-
-    channel.basic_nack(
-        delivery_tag=delivery_tag,
-        requeue=False,
-    )
-
-
-def retry_message(
-    channel: BlockingChannel,
-    delivery_tag: int,
-    error: Exception,
-) -> None:
-    """Return a temporarily failed message to RabbitMQ."""
-
-    logger.error(
-        "Temporary processing failure; message will be retried: %s",
-        error,
-    )
-
-    channel.basic_nack(
-        delivery_tag=delivery_tag,
-        requeue=True,
-    )
-
-
 def process_message(
     channel: BlockingChannel,
     method: Basic.Deliver,
@@ -434,140 +132,51 @@ def process_message(
     inference_request_publisher: (
         InferenceRequestPublisher | None
     ),
+    preprocessor: Preprocessor | None = None,
+    config: WorkerConfig | None = None,
 ) -> None:
-    """Validate and process one image message."""
+    """Process a message via the shared handler, preserving legacy hooks."""
 
-    del properties
-
-    delivery_tag = method.delivery_tag
-
-    try:
-        message = deserialize_message(
-            body=body,
-            active_schema_versions=active_schema_versions,
-        )
-
-        raw_image = decode_image(message)
-
-        event_id = str(message.event_id)
-        image_id = message.image_id
-
-        features = preprocess_image(raw_image)
-
-    except ValueError as error:
-        reject_invalid_message(
-            channel=channel,
-            delivery_tag=delivery_tag,
-            error=error,
-        )
-        return
-
-    except Exception as error:
-        retry_message(
-            channel=channel,
-            delivery_tag=delivery_tag,
-            error=error,
-        )
-        return
-
-    try:
-        write_to_redis(
-            redis_client=redis_client,
-            image_id=image_id,
-            tensor=features,
-        )
-
-    except redis.RedisError as error:
-        logger.error(
-            "Redis write failed for event %s and image %s: %s",
-            event_id,
-            image_id,
-            error,
-        )
-
-        channel.basic_nack(
-            delivery_tag=delivery_tag,
-            requeue=True,
-        )
-        return
-
-    postgres_written = True
-
-    try:
-        postgres_writer.write(
-            event_id=event_id,
-            image_id=image_id,
-            raw_image=raw_image,
-            tensor=features,
-        )
-
-    except psycopg2.Error as error:
-        postgres_written = False
-
-        logger.error(
-            "PostgreSQL write failed for event %s and image %s. "
-            "The feature remains available in Redis: %s",
-            event_id,
-            image_id,
-            error,
-        )
-
-    channel.basic_ack(
-        delivery_tag=delivery_tag,
+    # Resolve dependencies at call time to preserve existing monkeypatch targets.
+    selected_preprocessor = (
+        preprocess_image if preprocessor is None else preprocessor
     )
 
-    if postgres_written:
-        logger.info(
-            "Processed event %s for image %s. "
-            "Redis=success, PostgreSQL=success.",
-            event_id,
-            image_id,
-        )
-    else:
-        logger.warning(
-            "Processed event %s for image %s in partial failure mode. "
-            "Redis=success, PostgreSQL=failed.",
-            event_id,
-            image_id,
-        )
+    callbacks = ProcessingCallbacks(
+        deserialize_message=deserialize_message,
+        decode_image=decode_image,
+        write_to_redis=(
+            write_to_redis
+            if config is None
+            else partial(write_to_redis, config=config)
+        ),
+        reject_invalid_message=(
+            reject_invalid_message
+            if config is None
+            else partial(reject_invalid_message, config=config)
+        ),
+        retry_message=retry_message,
+    )
 
-    if (
-        inference_request_publisher is None
-        or not postgres_written
-    ):
-        return
-
-    try:
-        inference_request = InferenceRequestV1(
-            schema_version="v1",
-            request_id=message.event_id,
-            image_id=image_id,
-            timestamp=message.timestamp,
-        )
-
-        inference_request_publisher.publish(
-            inference_request
-        )
-
-        logger.info(
-            "Published automatic inference request "
-            "for event %s and image %s.",
-            event_id,
-            image_id,
-        )
-
-    except Exception as error:
-        logger.warning(
-            "Automatic inference request failed for event %s "
-            "and image %s. Ingestion remains successful: %s",
-            event_id,
-            image_id,
-            error,
-        )
+    _process_message(
+        channel=channel,
+        method=method,
+        properties=properties,
+        body=body,
+        redis_client=redis_client,
+        postgres_writer=postgres_writer,
+        active_schema_versions=active_schema_versions,
+        inference_request_publisher=inference_request_publisher,
+        preprocessor=selected_preprocessor,
+        callbacks=callbacks,
+        logger=logger,
+    )
 
 
 def run_worker() -> None:
     """Consume images and write features to Redis and PostgreSQL."""
+
+    config = WorkerConfig.from_environment()
 
     logger.info(
         "Loading active schema versions for '%s' from PostgreSQL.",
@@ -594,6 +203,13 @@ def run_worker() -> None:
             f"Required schema version '{SUPPORTED_SCHEMA_VERSION}' "
             "is not active."
         )
+
+    # Resolve the preprocessing adapter once during Worker startup.
+    preprocessor = create_preprocessor()
+    logger.info(
+        "Using preprocessing adapter: %s",
+        type(preprocessor).__name__,
+    )
 
     logger.info("Connecting to Redis.")
     redis_client = create_redis_client()
@@ -628,14 +244,14 @@ def run_worker() -> None:
         )
 
     logger.info("Connecting to RabbitMQ.")
-    rabbitmq_connection = create_rabbitmq_connection()
+    rabbitmq_connection = create_rabbitmq_connection(config=config)
 
     channel = rabbitmq_connection.channel()
 
-    declare_rabbitmq_topology(channel)
+    declare_rabbitmq_topology(channel, config=config)
 
     channel.basic_qos(
-        prefetch_count=1,
+        prefetch_count=config.prefetch_count,
     )
 
     def callback(
@@ -655,17 +271,19 @@ def run_worker() -> None:
             inference_request_publisher=(
                 inference_request_publisher
             ),
+            preprocessor=preprocessor,
+            config=config,
         )
 
     channel.basic_consume(
-        queue=QUEUE_NAME,
+        queue=config.queue_name,
         on_message_callback=callback,
         auto_ack=False,
     )
 
     logger.info(
         "Worker started. Waiting for messages from queue '%s'.",
-        QUEUE_NAME,
+        config.queue_name,
     )
 
     try:
