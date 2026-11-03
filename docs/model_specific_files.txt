@@ -1,77 +1,148 @@
 # Sentinel — Model/Dataset-Specific File Inventory
-# File location in repository: docs/model_specific_files.txt
+# Repository path: docs/model_specific_files.txt
 # Started: Phase 6.5B (2026-10-13)
-# Purpose: list files to review/replace when adapting Sentinel to a different model/dataset.
-# Maintain this inventory whenever a new model-specific file is created or discovered.
-# This is a migration checklist, NOT a list of files that should all be refactored now.
-# Status key: CONFIRMED = path identified in project outputs, REVIEW = inspect content/path before relying on it.
+# Updated: 2026-10-22 (generic model/dataset refactoring)
+# Purpose: identify files to replace or review when adapting Sentinel to another model/dataset.
+# This is a migration checklist, not an instruction to refactor all listed files immediately.
+# Status key:
+#   CONFIRMED   = existing path and relevant model/dataset dependency identified.
+#   TRANSITIONAL = compatibility or shared code still coupled to the current contract.
+#   GENERIC     = shared implementation; keep stable when switching compatible adapters.
+#   REVIEW      = path or behavior still needs further inspection before migration.
 
-[PHASE 6.4 — Gatekeeper]
+[PHASE 6.4 — GATEKEEPER]
 CONFIRMED | data/golden_set.csv
-  Golden-set examples; replace with a versioned, representative holdout set for the new dataset.
+  MNIST golden-set examples; replace with a representative, versioned holdout set.
 CONFIRMED | data/golden_set_manifest.json
-  Golden-set manifest; regenerate/validate alongside the new golden set.
+  Golden-set manifest; regenerate and validate alongside the new holdout set.
+CONFIRMED | conf/gatekeeper/adapters/mnist.yaml
+  Selected from conf/config.yaml; replace with the new dataset's Gatekeeper adapter configuration.
+CONFIRMED | src/sentinel/adapters/mnist.py
+  MNIST golden-set CSV parsing, image conversion and training-holdout row filtering.
+  Replace or extend through a separate dataset-specific adapter; keep shared Gatekeeper logic generic.
 CONFIRMED | tests/test_mnist_gatekeeper_adapter.py
-  MNIST adapter tests; provide equivalent tests for a replacement evaluation adapter.
+  MNIST golden-set adapter tests; add equivalent tests for the replacement adapter.
 CONFIRMED | tests/test_mnist_holdout_filter.py
-  MNIST holdout behavior tests; adapt to the replacement dataset and sample identifiers.
-REVIEW    | conf/gatekeeper/adapters/mnist.yaml
-  Selected by conf/config.yaml (gatekeeper/adapters: mnist); verify exact filename and adapter settings.
-REVIEW    | MNIST-specific Gatekeeper evaluation adapter implementation (exact path not yet provided)
-  Locate via src/sentinel/gatekeeper/ and src/sentinel/adapters/; keep the shared Gatekeeper policy generic.
+  MNIST holdout filtering tests; replace sample-identifier assumptions as necessary.
 
-[PHASE 6.5 — Serving / Canary Promotion]
+[PHASE 6.5 — SERVING / CANARY PROMOTION]
 CONFIRMED | conf/serving/mnist.yaml
-  MNIST endpoints, tensor I/O, Triton settings and read-only smoke-test sample (28x28 zeros).
+  MNIST model endpoint, tensor I/O, Triton settings and MNIST smoke-test input.
 CONFIRMED | charts/sentinel/values-prod.yaml
-  Environment-specific productionReference and canaryReference; set to new ClearML model IDs.
+  Production/canary model references are deployment-specific; update for a new model when authorized.
 CONFIRMED | charts/sentinel/values.yaml
-  Currently contains MNIST Canary URL and MNIST-specific drift-diagnostics tensor/model defaults.
-CONFIRMED | src/sentinel/serving/api.py
-  Still has MNIST shape (1,1,28,28), digit labels 0..9, prediction range 0..9 and MNIST Canary default URL. model_version has already been generalized.
-CONFIRMED | src/sentinel/schema/v1.py
-  Image contract still requires 28x28 grayscale PNG and inference class range 0..9; model_version has already been generalized.
-CONFIRMED | src/sentinel/train.py
-  Contains MNIST-specific model metadata/tags, label enumeration and training implementation; separate into model/dataset adapter when refactoring.
-CONFIRMED | conf/config.yaml
-  Currently selects the MNIST dataset, CNN registry name and model/training-specific parameters.
-CONFIRMED | conf/model/cnn_v1.yaml
-  CNN architecture configuration: channels, class count and hidden dimensions.
+  Contains MNIST-specific Canary and drift-diagnostics defaults that need migration review.
+TRANSITIONAL | src/sentinel/serving/api.py
+  Still includes MNIST input shape, digit-label/range assumptions and a MNIST Canary fallback.
+  model_version handling has already been made more generic.
+TRANSITIONAL | src/sentinel/schema/v1.py
+  Image-message and inference contracts still include MNIST-oriented shape/class constraints.
+  schema_version='v1' is a MESSAGE CONTRACT version, not a model version.
 CONFIRMED | tests/test_schema.py
-  Tests of the current MNIST-oriented image/inference contract; adapt/add coverage for replacement data contracts.
-
-[OTHER KNOWN MODEL/DATASET-SPECIFIC FILES — REVIEW AFTER PHASE 6]
-CONFIRMED | src/sentinel/producers/camera_feed.py
-  Currently loads/sends MNIST inputs; replace or configure the producer for a different data source.
-CONFIRMED | src/sentinel/upload_data.py
-  Currently uploads the MNIST dataset to ClearML.
+  Tests the current image/inference contract; adjust or add tests for future contracts.
 CONFIRMED | serving/preprocess/mnist.py
-  MNIST-specific request/response adapter (source template created in Phase 6.5B).
-  Promotion must render its model-version marker before registration; never deploy the template unchanged.
-  The existing V1/V2 ClearML Serving Task artifacts remain unchanged:
+  MNIST-specific ClearML Serving preprocessing template.
+  Render its model-version marker before registration; never deploy the template unchanged.
+  Preserve existing ClearML Serving V1/V2 Task artifacts:
     py_code_sentinel-mnist_1
     py_code_sentinel-mnist_2
 
-[INTENTIONALLY GENERIC — DO NOT REWRITE JUST TO CHANGE DATASET]
-- Shared Gatekeeper compare/policy/metrics contracts: prefer swapping adapters/config.
-- src/sentinel/adapters/clearml_model.py: model artifact resolver (provider-specific, not MNIST-specific).
-- src/sentinel/adapters/torchscript_classifier.py: TorchScript adapter (framework-specific); replace only if the model type/framework changes.
-- Jenkinsfile / Jenkinsfile.retraining: should orchestrate generic steps and read model/serving configuration.
-- schema_version="v1" denotes message schema version, NOT model version.
+[TRAINING / MODEL / DATASET — STILL TO REFACTOR]
+TRANSITIONAL | src/sentinel/train.py
+  Contains MNIST CSV parsing/preprocessing, fixed CLASS_LABELS, model selection,
+  training metadata and model-version registration behavior.
+  Keep generic retraining orchestration separate from dataset/model adapters.
+CONFIRMED | src/sentinel/model.py
+  Defines MNISTClassifier with MNIST-oriented architecture and input assumptions.
+  Preserve checkpoint/state_dict compatibility when introducing model factories.
+CONFIRMED | conf/model/cnn_v1.yaml
+  CNN architecture settings; verify actual model implementation against config before reuse.
+CONFIRMED | conf/config.yaml
+  Selects the MNIST dataset, CNN model settings and preprocessing: mnist.
+  Move replaceable model/dataset details into dedicated Hydra config groups as refactoring proceeds.
+REVIEW    | conf/dataset/fashion_mnist.yaml
+  Previously observed empty; not a usable dataset adapter/configuration yet.
+CONFIRMED | src/sentinel/upload_data.py
+  Dataset upload currently targets MNIST; adapt for a different dataset source.
+CONFIRMED | src/sentinel/producers/camera_feed.py
+  Producer currently uses MNIST data and imports DEAD_LETTER_EXCHANGE from worker.py.
+  Preserve that import during refactoring until its replacement is tested.
+
+[PREPROCESSING — REFACTORED 2026-10-22]
+CONFIRMED | src/sentinel/adapters/mnist_preprocessing.py
+  MNISTImagePreprocessor: grayscale, resize to 28x28, normalize to [0,1], output [1,1,28,28].
+  Replace with a new preprocessor adapter when switching incompatible input data.
+CONFIRMED | conf/preprocessing/mnist.yaml
+  Hydra _target_ for MNISTImagePreprocessor; switch the config selection for another adapter.
+TRANSITIONAL | src/sentinel/features.py
+  Backward-compatible preprocess_image() wrapper still delegates to the MNIST adapter.
+  Existing callers must migrate to injected/configured preprocessors before removing the wrapper.
+GENERIC     | src/sentinel/adapters/preprocessor_factory.py
+  Loads Hydra config and instantiates the selected adapter once at Worker startup.
+  Currently has an image-oriented Callable[[bytes], Tensor] interface; broaden only if needed.
+
+[WORKER — RESPONSIBILITIES SPLIT 2026-10-22]
+TRANSITIONAL | src/sentinel/consumers/worker.py
+  Orchestrates Worker startup, schema registry, resources and RabbitMQ callback.
+  Injects the Hydra-selected preprocessor; keeps legacy process_message/patch points compatible.
+  Still contains fixed schema/infrastructure defaults; configuration cleanup is pending.
+TRANSITIONAL | src/sentinel/consumers/worker_message_contract.py
+  Encapsulates image-message validation/decoding; currently understands ImageMessageV1.
+  Add explicit contract adapters for new message types rather than only changing version text.
+TRANSITIONAL | src/sentinel/consumers/worker_processing.py
+  Encapsulates processing, Redis/PostgreSQL writes, ACK/NACK and inference publication.
+  Uses an injected preprocessor but still assumes image-message/InferenceRequestV1 contracts.
+TRANSITIONAL | src/sentinel/consumers/worker_storage.py
+  Encapsulates Redis and PostgreSQL storage; currently uses model_version='v1',
+  key prefix feat:, TTL=3600 and raw tensor bytes without shape/dtype metadata.
+  Preserve stored-data compatibility until storage consumers and migrations are reviewed.
+GENERIC     | src/sentinel/consumers/worker_messaging.py
+  Encapsulates RabbitMQ connection, queue/DLQ topology, retry and rejection.
+  Queue names, credentials fallbacks and timeouts are still hardcoded; move to runtime config.
+GENERIC     | Dockerfile.worker
+  Runtime image now includes /app/conf for Hydra; no specific model needs to be baked into code.
+  Confirm any future model-specific config is safe to include in the image.
+
+[REGRESSION AND VERIFICATION]
+- tests/test_worker_processing_contract.py: protects rejection/retry and Redis failure policy.
+- tests/test_worker_preprocessor_injection.py: checks injected preprocessor is used.
+- tests/test_worker_preprocessor_lifecycle.py: checks adapter is initialized once and reused.
+- tests/test_worker_auto_inference.py: protects partial PostgreSQL failure and inference publish failure.
+- tests/test_training_config.py: now tests config loading through Hydra composition.
+- Latest local suite after Worker split: 186 passed, 1 skipped (2026-10-22).
+- Worker E2E verified: local RabbitMQ -> Hydra/MNIST Worker -> Redis + PostgreSQL;
+  feature_log row persisted; Redis feature payload length 3136 bytes; queue ACK verified.
+- E2E ran with AUTO_INFERENCE_ENABLED=false; automatic inference was NOT E2E tested.
+- Temporary E2E Docker Compose file, containers, network and volumes were removed.
+
+[INTENTIONALLY SHARED — DO NOT REWRITE ONLY TO CHANGE DATASET]
+- Gatekeeper compare/policy/metrics contracts: prefer swapping evaluation adapters/config.
+- src/sentinel/adapters/clearml_model.py: model artifact resolver (provider-specific).
+- src/sentinel/adapters/torchscript_classifier.py: TorchScript adapter (framework-specific).
+- Jenkinsfile and Jenkinsfile.retraining: orchestration should remain generic/config-driven.
+- Keep Kubernetes infrastructure config in Helm/ConfigMaps; secrets in Kubernetes Secrets.
+- Keep model/dataset/preprocessing selection in Hydra; avoid competing config sources.
 
 [CURRENT WORK AND DECISIONS]
-- Branch: phase-6-feedback-loop.
-- Baseline commit: 644a568 (serving contracts prepared).
-- Main model: productionReference (currently V1); Retraining MUST NOT update it automatically.
-- Retraining candidate after Gatekeeper PASS replaces only the Canary candidate reference.
-- Preserve the active traffic weights (currently 90% main / 10% Canary).
-- Future routing mode and weights are selected by the user through the UI; NOT implemented now.
-- Do not advance retraining checkpoint until model registration, routing update and verification succeed.
-- No manual application deployments; use Git/Jenkins deployment workflow.
-- Do not put credentials, tokens, or runtime secrets in this file.
+- Working branch: refactor/generic-model-dataset (local, uncommitted changes).
+- Previous validated baseline: phase-6-feedback-loop; Jenkins Build #64 used commit 65ee28e.
+- Complete Worker responsibility split before changing its hardcoded configuration values.
+- Preserve ACK/NACK, DLQ, Redis/PostgreSQL partial-failure and inference behavior.
+- Preserve backwards-compatible imports and test monkeypatch paths until consumers migrate.
+- Keep original/base training dataset PLUS all eligible accumulated human-labeled rows;
+  the >=1000 new-row threshold gates retraining but does not limit training to new rows.
+- Exclude discard labels and honor immutable training holdout requirements.
+- Main model: productionReference; Retraining MUST NOT update it automatically.
+- After Gatekeeper PASS, retraining candidate replaces only the Canary candidate reference.
+- Preserve configured traffic weights (previously 90% main / 10% Canary).
+- Future routing mode/weights selected through UI: not implemented by this refactor.
+- Do not advance retraining checkpoint until registration, routing update and verification succeed.
+- No manual application deployment and no automatic production promotion.
+- Never stage unrelated untracked README.txt or add credentials/tokens to this file.
 
 [HOW TO MAINTAIN]
-1. On adding/discovering a model-specific file, add its exact repository-relative path here.
-2. State what must be changed for a different model/dataset and whether the path is verified.
-3. When generic refactoring removes model dependence, mark the item GENERIC or replace its path with the adapter/config path.
-4. Update this inventory in the same Git commit as the new model-specific file.
+1. Add each new model/dataset-specific path and the required migration action.
+2. Mark path/behavior uncertainty as REVIEW; do not assume it has been verified.
+3. Mark compatible shared logic GENERIC and remaining compatibility coupling TRANSITIONAL.
+4. Update this inventory in the same Git commit as related adapter/config changes.
+5. Test with a new adapter before claiming the platform is fully model-agnostic.
