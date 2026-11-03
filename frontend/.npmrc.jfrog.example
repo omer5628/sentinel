@@ -1,0 +1,4 @@
+registry=${JFROG_NPM_REGISTRY}
+replace-registry-host=npmjs
+audit=false
+fund=false
