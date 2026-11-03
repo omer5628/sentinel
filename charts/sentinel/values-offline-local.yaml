@@ -1,0 +1,41 @@
+# Local container images for offline Kubernetes testing.
+# Images must be loaded into the target Kubernetes node.
+# All settings in this override are scoped to the offline test release.
+
+api:
+  image:
+    repository: sentinel-api
+    tag: "torch-2.12.1"
+    pullPolicy: Never
+  serving:
+    # Disable requests to the shared ClearML Serving service in this test profile.
+    canaryUrl: "http://127.0.0.1:9/unavailable"
+
+worker:
+  image:
+    repository: sentinel-worker
+    tag: "torch-2.12.1"
+    pullPolicy: Never
+  autoInference:
+    enabled: false
+
+inferenceRunner:
+  enabled: false
+
+inferenceLogger:
+  replicaCount: 0
+
+alertmanager:
+  jenkinsWebhook:
+    enabled: false
+
+opsFlags:
+  retrainingEnabled: false
+  canaryDeployAllowed: false
+
+jaeger:
+  image:
+    pullPolicy: Never
+
+promtail:
+  enabled: false
