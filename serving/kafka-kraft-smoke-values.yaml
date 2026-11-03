@@ -1,0 +1,28 @@
+# Kafka subchart-only settings for a disposable compatibility test.
+# Chart: external/helm-charts/clearml-serving/charts/kafka (version 21.4.0).
+# Data is intentionally ephemeral: no existing PVCs or live releases are touched.
+image:
+  repository: bitnamilegacy/kafka
+  tag: "3.9.0"
+  pullPolicy: IfNotPresent
+replicaCount: 1
+kraft:
+  enabled: true
+  processRoles: broker,controller
+zookeeper:
+  enabled: false
+persistence:
+  enabled: false
+metrics:
+  kafka:
+    enabled: false
+  jmx:
+    enabled: false
+volumePermissions:
+  enabled: false
+# Chart 21.4.0 sets BROKER_ID but omits NODE_ID required by Kafka 3.9 KRaft.
+# This pin is valid only for the disposable single-node compatibility test.
+minBrokerId: 0
+extraEnvVars:
+  - name: KAFKA_CFG_NODE_ID
+    value: "0"

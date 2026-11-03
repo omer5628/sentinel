@@ -1,0 +1,27 @@
+# ClearML Serving Kafka override for an isolated KRaft compatibility test.
+# Apply this on top of the existing parent ClearML Serving chart values.
+# Do NOT use this to migrate an existing ZooKeeper-backed Kafka data volume in place.
+kafka:
+  enabled: true
+  image:
+    repository: bitnamilegacy/kafka
+    tag: "3.9.0"
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  kraft:
+    enabled: true
+    processRoles: broker,controller
+  zookeeper:
+    enabled: false
+  metrics:
+    kafka:
+      enabled: false
+    jmx:
+      enabled: false
+  volumePermissions:
+    enabled: false
+  # Single-broker compatibility test only: match minBrokerId=0.
+  minBrokerId: 0
+  extraEnvVars:
+    - name: KAFKA_CFG_NODE_ID
+      value: "0"
