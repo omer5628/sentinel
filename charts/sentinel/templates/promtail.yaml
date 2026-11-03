@@ -1,3 +1,4 @@
+{{- if or (not (hasKey .Values.promtail "enabled")) .Values.promtail.enabled }}
 apiVersion: v1
 kind: ServiceAccount
 
@@ -189,3 +190,4 @@ spec:
           hostPath:
             path: /var/lib/promtail
             type: DirectoryOrCreate
+{{- end }}
