@@ -9,7 +9,7 @@ metadata:
 spec:
   containers:
     - name: wget
-      image: busybox
+      image: busybox:1.31.1
       command: ['wget']
       args: ['{{ include "alertmanager.fullname" . }}:{{ .Values.service.port }}']
   restartPolicy: Never

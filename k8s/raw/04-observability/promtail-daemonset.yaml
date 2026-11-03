@@ -106,7 +106,7 @@ spec:
 
       containers:
         - name: promtail
-          image: grafana/promtail:latest
+          image: grafana/promtail:3.5
 
           env:
             - name: HOSTNAME
