@@ -32,6 +32,8 @@ ENV/
 .env
 .env.*
 !.env.example
+!.env.compose.example
+!.env.compose.full.example
 
 # Local ClearML configuration / credentials
 clearml.conf
@@ -87,3 +89,21 @@ multirun/
 data/*
 !data/golden_set.csv
 !data/golden_set_manifest.json
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.compose.example
+!.env.compose.full.example
+
+# Local backups and generated archives
+backups/
+docker-backup/
+*.bak
+sentinel-source-*.zip
+sentinel-source-*.zip.sha256
+
+# Generated source archives
+sentinel-source-*.zip
+sentinel-source-*.zip.sha256

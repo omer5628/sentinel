@@ -1,0 +1,179 @@
+-- Ported unchanged from charts/sentinel/templates/postgres-init-configmap.yaml at commit 3781297
+CREATE TABLE IF NOT EXISTS feature_log (
+    event_id UUID PRIMARY KEY,
+    image_id VARCHAR(50) NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    raw_image BYTEA,
+    vector JSONB NOT NULL,
+    label VARCHAR(50),
+    labeled_at TIMESTAMP WITH TIME ZONE,
+    model_version VARCHAR(20) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_log_image_id
+    ON feature_log (image_id);
+
+CREATE INDEX IF NOT EXISTS idx_feature_log_timestamp
+    ON feature_log (timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_feature_log_unlabeled
+    ON feature_log (timestamp)
+    WHERE label IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_feature_log_labeled_at
+    ON feature_log (labeled_at)
+    WHERE label IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION prevent_feature_log_history_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS '
+BEGIN
+    IF NEW.event_id IS DISTINCT FROM OLD.event_id
+       OR NEW.image_id IS DISTINCT FROM OLD.image_id
+       OR NEW.timestamp IS DISTINCT FROM OLD.timestamp
+       OR NEW.raw_image IS DISTINCT FROM OLD.raw_image
+       OR NEW.vector IS DISTINCT FROM OLD.vector
+       OR NEW.model_version IS DISTINCT FROM OLD.model_version
+    THEN
+        RAISE EXCEPTION
+            ''Historical feature fields in feature_log are immutable'';
+    END IF;
+
+    RETURN NEW;
+END;
+';
+
+DROP TRIGGER IF EXISTS feature_log_history_immutable
+    ON feature_log;
+
+CREATE TRIGGER feature_log_history_immutable
+BEFORE UPDATE OF
+    event_id,
+    image_id,
+    timestamp,
+    raw_image,
+    vector,
+    model_version
+ON feature_log
+FOR EACH ROW
+EXECUTE FUNCTION prevent_feature_log_history_mutation();
+
+CREATE TABLE IF NOT EXISTS retraining_state (
+    pipeline_name VARCHAR(100) PRIMARY KEY,
+    last_successful_cutoff TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+        DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS inference_log (
+    inference_id UUID PRIMARY KEY,
+    image_id VARCHAR(200) NOT NULL,
+    model_version VARCHAR(20) NOT NULL,
+    predicted_class INTEGER NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_inference_model_version
+        CHECK (model_version IN ('v1', 'v2')),
+    CONSTRAINT chk_inference_predicted_class
+        CHECK (predicted_class BETWEEN 0 AND 9),
+    CONSTRAINT chk_inference_confidence
+        CHECK (confidence BETWEEN 0.0 AND 1.0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_inference_log_image_id
+    ON inference_log (image_id);
+
+CREATE INDEX IF NOT EXISTS idx_inference_log_model_version
+    ON inference_log (model_version);
+
+CREATE INDEX IF NOT EXISTS idx_inference_log_created_at
+    ON inference_log (created_at);
+
+CREATE TABLE IF NOT EXISTS batch_predictions (
+    prediction_id UUID PRIMARY KEY,
+    image_id VARCHAR(255) NOT NULL,
+    campaign_name VARCHAR(100) NOT NULL,
+    image_path TEXT NOT NULL,
+    predicted_class INTEGER NOT NULL,
+    predicted_label VARCHAR(50) NOT NULL,
+    confidence DOUBLE PRECISION NOT NULL,
+    model_version VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_batch_predictions_campaign
+    ON batch_predictions (campaign_name);
+
+CREATE INDEX IF NOT EXISTS idx_batch_predictions_image_id
+    ON batch_predictions (image_id);
+
+CREATE INDEX IF NOT EXISTS idx_batch_predictions_created_at
+    ON batch_predictions (created_at);
+
+CREATE TABLE IF NOT EXISTS schema_registry (
+    schema_name VARCHAR(100) NOT NULL,
+    schema_version VARCHAR(20) NOT NULL,
+    schema_definition JSONB NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (schema_name, schema_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_schema_registry_active
+    ON schema_registry (schema_name, is_active);
+
+INSERT INTO schema_registry (
+    schema_name,
+    schema_version,
+    schema_definition,
+    is_active
+)
+VALUES (
+    'image_message',
+    'v1',
+    $schema$
+    {
+        "title": "ImageMessageV1",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+            "schema_version",
+            "event_id",
+            "image_id",
+            "timestamp",
+            "image_format",
+            "image_base64"
+        ],
+        "properties": {
+            "schema_version": {
+                "type": "string",
+                "const": "v1"
+            },
+            "event_id": {
+                "type": "string",
+                "format": "uuid"
+            },
+            "image_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+            },
+            "timestamp": {
+                "type": "number",
+                "exclusiveMinimum": 0
+            },
+            "image_format": {
+                "type": "string",
+                "const": "png"
+            },
+            "image_base64": {
+                "type": "string",
+                "minLength": 1
+            }
+        }
+    }
+    $schema$::jsonb,
+    TRUE
+)
+ON CONFLICT (schema_name, schema_version) DO NOTHING;

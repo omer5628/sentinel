@@ -1,0 +1,22 @@
+# Development policy ported from charts/sentinel/values-dev.yaml.
+# Adjust to the model/dataset before production use.
+groups:
+  - name: sentinel-drift
+    rules:
+      - record: instance:prediction_rate:ratio
+        expr: |
+          sum by (class_name) (increase(model_predictions_total[5m]))
+          /
+          scalar(sum(increase(model_predictions_total[5m])))
+      - alert: SentinelPredictionDistributionDrift
+        expr: |
+          instance:prediction_rate:ratio > 0.80
+          and on() (sum(increase(model_predictions_total[5m])) >= 20)
+        for: 1m
+        labels:
+          severity: warning
+          component: model-drift
+          strategy: prediction_distribution
+        annotations:
+          summary: "Prediction distribution drift detected."
+          description: "A prediction class exceeded the configured maximum share."

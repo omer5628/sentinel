@@ -1,0 +1,12 @@
+# Alert forwarding to Jenkins is intentionally disabled until credentials,
+# webhook endpoint, and policy are verified.
+global:
+  resolve_timeout: 5m
+route:
+  receiver: sentinel-default
+  group_by: [alertname, class_name]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 1h
+receivers:
+  - name: sentinel-default

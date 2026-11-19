@@ -1,0 +1,493 @@
+# FULL-STACK STATIC CANDIDATE (not runtime-tested).
+# Do NOT start alongside original GCP Workstation Minikube/ClearML services.
+# Jenkins UI starts here; Kubernetes-based Jenkins pipelines are NOT ported.
+# Fill real credentials and ClearML Serving task ID before deployment.
+name: sentinel-release
+
+x-rabbitmq-env: &rabbitmq-env
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: "5672"
+  RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME in .env}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+
+x-postgres-env: &postgres-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-sentinel}
+  POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+
+x-redis-env: &redis-env
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+
+x-worker-build: &worker-build
+  context: .
+  dockerfile: Dockerfile.worker
+  args:
+    PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11}
+    UV_TOOL_IMAGE: ${UV_TOOL_IMAGE:-ghcr.io/astral-sh/uv:python3.10-alpine}
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    restart: unless-stopped
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:?Set RABBITMQ_USERNAME in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT_HOST:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sentinel}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/compose/postgres-init.sql:/docker-entrypoint-initdb.d/10-sentinel.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11}
+        UV_TOOL_IMAGE: ${UV_TOOL_IMAGE:-ghcr.io/astral-sh/uv:python3.10-alpine}
+    image: sentinel-api:compose-candidate
+    restart: unless-stopped
+    environment:
+      <<: [*rabbitmq-env, *redis-env]
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+      # ClearML Serving service is defined below; task/model must be restored.
+      CLEARML_CANARY_URL: ${CLEARML_CANARY_URL:-http://clearml-serving-inference:8080/serve/sentinel-mnist-canary}
+    ports:
+      - "127.0.0.1:${SENTINEL_API_PORT:-8000}:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/live', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  worker:
+    build: *worker-build
+    image: sentinel-worker:compose-candidate
+    restart: unless-stopped
+    environment:
+      <<: [*rabbitmq-env, *postgres-env, *redis-env]
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      AUTO_INFERENCE_ENABLED: ${AUTO_INFERENCE_ENABLED:-true}
+      WORKER_QUEUE_NAME: ${WORKER_QUEUE_NAME:-video_stream}
+      WORKER_DEAD_LETTER_EXCHANGE: ${WORKER_DEAD_LETTER_EXCHANGE:-sentinel.dlx}
+      WORKER_DEAD_LETTER_QUEUE: ${WORKER_DEAD_LETTER_QUEUE:-video_stream.dlq}
+      WORKER_DEAD_LETTER_ROUTING_KEY: ${WORKER_DEAD_LETTER_ROUTING_KEY:-video_stream.invalid}
+      WORKER_FEATURE_TTL_SECONDS: ${WORKER_FEATURE_TTL_SECONDS:-3600}
+      WORKER_PREFETCH_COUNT: ${WORKER_PREFETCH_COUNT:-1}
+      WORKER_RABBITMQ_HEARTBEAT: ${WORKER_RABBITMQ_HEARTBEAT:-60}
+      WORKER_RABBITMQ_BLOCKED_TIMEOUT: ${WORKER_RABBITMQ_BLOCKED_TIMEOUT:-30}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  inference-runner:
+    image: sentinel-worker:compose-candidate
+    command: ["python", "-m", "sentinel.consumers.inference_runner"]
+    restart: unless-stopped
+    environment:
+      <<: *rabbitmq-env
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SENTINEL_API_URL: http://api:8000
+    depends_on:
+      worker:
+        condition: service_started
+      api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  inference-logger:
+    image: sentinel-worker:compose-candidate
+    command: ["python", "-m", "sentinel.consumers.inference_logger"]
+    restart: unless-stopped
+    environment:
+      <<: [*rabbitmq-env, *postgres-env]
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      worker:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  ui-api:
+    # Worker image has conf/, needed by UI-managed Producer. No Worker code changes.
+    image: sentinel-worker:compose-candidate
+    command: ["uvicorn", "sentinel.ui.api:app", "--host", "0.0.0.0", "--port", "8001"]
+    restart: unless-stopped
+    environment:
+      <<: [*rabbitmq-env, *postgres-env, *redis-env]
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CLEARML_CONFIG_FILE: /etc/clearml/compose.conf
+      CLEARML_CACHE_DIR: /tmp/sentinel-clearml-cache
+      # Producer requires real ClearML credentials and restored Dataset.
+      CLEARML_API_HOST: ${CLEARML_API_HOST:-http://clearml-apiserver:8008}
+      CLEARML_WEB_HOST: ${CLEARML_WEB_HOST:-http://clearml-webserver:80}
+      CLEARML_FILES_HOST: ${CLEARML_FILES_HOST:-http://clearml-fileserver:8081}
+      CLEARML_API_ACCESS_KEY: ${CLEARML_API_ACCESS_KEY:-}
+      CLEARML_API_SECRET_KEY: ${CLEARML_API_SECRET_KEY:-}
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/live', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - ./config/clearml/compose.conf:/etc/clearml/compose.conf:ro
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui-compose
+    image: sentinel-frontend:compose-candidate
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      ui-api:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v3.10.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./infra/compose/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/compose/prometheus-drift.rules.yml:/etc/prometheus/rules/drift.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+    volumes:
+      - ./infra/compose/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.71.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:${JAEGER_PORT:-16686}:16686"
+
+  loki:
+    image: grafana/loki:3.5.12
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./infra/compose/loki.yml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+
+  grafana:
+    image: grafana/grafana:13.0.10-ubuntu
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/compose/grafana-datasources.yml:/etc/grafana/provisioning/datasources/sentinel.yml:ro
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+
+
+  # ClearML Server: 7 services (adapted to named volumes to enable independent restore).
+  # Internal names are deliberately distinct from Sentinel's redis/postgres.
+  clearml-redis:
+    image: redis:8.2.3
+    restart: unless-stopped
+    volumes:
+      - ${CLEARML_DATA_ROOT}/data/redis:/data
+
+  clearml-mongo:
+    image: mongo:8.0.15
+    restart: unless-stopped
+    command: ["--setParameter", "internalQueryMaxBlockingSortMemoryUsageBytes=196100200"]
+    volumes:
+      - ${CLEARML_DATA_ROOT}/data/mongo_4/db:/data/db
+      - ${CLEARML_DATA_ROOT}/data/mongo_4/configdb:/data/configdb
+
+  clearml-elasticsearch:
+    image: elasticsearch:8.19.9
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      bootstrap.memory_lock: "true"
+      cluster.name: clearml
+      node.name: clearml
+      cluster.routing.allocation.disk.watermark.low: 500mb
+      cluster.routing.allocation.disk.watermark.high: 500mb
+      cluster.routing.allocation.disk.watermark.flood_stage: 500mb
+      cluster.routing.allocation.node_initial_primaries_recoveries: "500"
+      http.compression_level: "7"
+      reindex.remote.whitelist: "'*.*'"
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+      nofile: {soft: 65536, hard: 65536}
+    volumes:
+      - ${CLEARML_DATA_ROOT}/data/elastic_7:/usr/share/elasticsearch/data
+      - ${CLEARML_DATA_ROOT}/logs/elasticsearch:/usr/share/elasticsearch/logs
+
+  clearml-fileserver:
+    image: ${CLEARML_SERVER_IMAGE:-clearml/server:latest}
+    restart: unless-stopped
+    command: ["fileserver"]
+    environment:
+      CLEARML__fileserver__delete__allow_batch: "true"
+    volumes:
+      - ${CLEARML_DATA_ROOT}/data/fileserver:/mnt/fileserver
+      - ${CLEARML_DATA_ROOT}/config:/opt/clearml/config
+      - ${CLEARML_DATA_ROOT}/logs:/var/log/clearml
+    ports:
+      - "127.0.0.1:${CLEARML_FILES_PORT_HOST:-8081}:8081"
+    networks:
+      default:
+        aliases:
+          - fileserver
+
+  clearml-apiserver:
+    image: ${CLEARML_SERVER_IMAGE:-clearml/server:latest}
+    restart: unless-stopped
+    command: ["apiserver"]
+    environment:
+      CLEARML_ELASTIC_SERVICE_HOST: clearml-elasticsearch
+      CLEARML_ELASTIC_SERVICE_PORT: "9200"
+      CLEARML_MONGODB_SERVICE_HOST: clearml-mongo
+      CLEARML_MONGODB_SERVICE_PORT: "27017"
+      CLEARML_REDIS_SERVICE_HOST: clearml-redis
+      CLEARML_REDIS_SERVICE_PORT: "6379"
+      CLEARML_SERVER_DEPLOYMENT_TYPE: linux
+      CLEARML__apiserver__pre_populate__enabled: "false"
+      CLEARML__services__async_urls_delete__enabled: "true"
+      CLEARML__services__async_urls_delete__fileserver__url_prefixes: "[${CLEARML_FILES_PUBLIC_URL:-}]"
+    volumes:
+      - ${CLEARML_DATA_ROOT}/data/fileserver:/mnt/fileserver
+      - ${CLEARML_DATA_ROOT}/config:/opt/clearml/config
+      - ${CLEARML_DATA_ROOT}/logs:/var/log/clearml
+    ports:
+      - "127.0.0.1:${CLEARML_API_PORT_HOST:-8008}:8008"
+    networks:
+      default:
+        aliases:
+          - apiserver
+    depends_on:
+      - clearml-elasticsearch
+      - clearml-mongo
+      - clearml-redis
+      - clearml-fileserver
+
+  clearml-webserver:
+    image: ${CLEARML_SERVER_IMAGE:-clearml/server:latest}
+    restart: unless-stopped
+    command: ["webserver"]
+    ports:
+      - "127.0.0.1:${CLEARML_WEB_PORT_HOST:-8080}:80"
+    depends_on:
+      - clearml-apiserver
+      - clearml-fileserver
+
+  clearml-async-delete:
+    image: ${CLEARML_SERVER_IMAGE:-clearml/server:latest}
+    restart: unless-stopped
+    entrypoint:
+      - python3
+      - -m
+      - jobs.async_urls_delete
+      - --fileserver-host
+      - http://clearml-fileserver:8081
+    environment:
+      CLEARML_ELASTIC_SERVICE_HOST: clearml-elasticsearch
+      CLEARML_ELASTIC_SERVICE_PORT: "9200"
+      CLEARML_MONGODB_SERVICE_HOST: clearml-mongo
+      CLEARML_MONGODB_SERVICE_PORT: "27017"
+      CLEARML_REDIS_SERVICE_HOST: clearml-redis
+      CLEARML_REDIS_SERVICE_PORT: "6379"
+      PYTHONPATH: /opt/clearml/apiserver
+      CLEARML__services__async_urls_delete__fileserver__url_prefixes: "[${CLEARML_FILES_PUBLIC_URL:-}]"
+    volumes:
+      - ${CLEARML_DATA_ROOT}/config:/opt/clearml/config
+      - ${CLEARML_DATA_ROOT}/logs:/var/log/clearml
+    depends_on:
+      - clearml-apiserver
+      - clearml-fileserver
+      - clearml-elasticsearch
+      - clearml-mongo
+      - clearml-redis
+
+  # Existing K8s images are 1.3.1. A separate 1.3.2 image is present on host;
+  # switch only after verifying the Serving task compatibility.
+  clearml-serving-triton:
+    image: ${CLEARML_TRITON_IMAGE:-allegroai/clearml-serving-triton:1.3.1}
+    restart: unless-stopped
+    environment: &clearml-serving-env
+      CLEARML_TRITON_HELPER_ARGS: "--inference-task-id ${CLEARML_SERVING_TASK_ID}"
+      CLEARML_CONFIG_FILE: /etc/clearml/compose.conf
+      CLEARML_CACHE_DIR: /tmp/sentinel-clearml-cache
+      CLEARML_API_HOST: http://clearml-apiserver:8008
+      CLEARML_FILES_HOST: http://clearml-fileserver:8081
+      CLEARML_WEB_HOST: http://clearml-webserver:80
+      CLEARML_API_ACCESS_KEY: ${CLEARML_API_ACCESS_KEY:?Set CLEARML_API_ACCESS_KEY in environment}
+      CLEARML_API_SECRET_KEY: ${CLEARML_API_SECRET_KEY:?Set CLEARML_API_SECRET_KEY in environment}
+      CLEARML_SERVING_TASK_ID: ${CLEARML_SERVING_TASK_ID:?Set CLEARML_SERVING_TASK_ID in environment}
+      CLEARML_TRITON_POLL_FREQ: "5"
+      CLEARML_TRITON_METRIC_FREQ: "5"
+    depends_on:
+      - clearml-apiserver
+      - clearml-fileserver
+    volumes:
+      - ./config/clearml/compose.conf:/etc/clearml/compose.conf:ro
+
+  clearml-serving-inference:
+    image: ${CLEARML_INFERENCE_IMAGE:-allegroai/clearml-serving-inference:1.3.1}
+    restart: unless-stopped
+    environment:
+      <<: *clearml-serving-env
+      CLEARML_DEFAULT_BASE_SERVE_URL: http://clearml-serving-inference:8080/serve
+      CLEARML_DEFAULT_TRITON_GRPC_ADDR: clearml-serving-triton:8001
+      CLEARML_SERVING_PORT: "8080"
+      CLEARML_SERVING_NUM_PROCESS: "1"
+      CLEARML_SERVING_POLL_FREQ: "5"
+      CLEARML_USE_GUNICORN: "true"
+    ports:
+      - "127.0.0.1:${CLEARML_INFERENCE_PORT_HOST:-8085}:8080"
+    depends_on:
+      - clearml-serving-triton
+      - clearml-apiserver
+    volumes:
+      - ./config/clearml/compose.conf:/etc/clearml/compose.conf:ro
+
+  # Controller only; existing Kubernetes-specific jobs and cluster-agent support
+  # require separate adaptation, credentials and agent configuration.
+  jenkins:
+    image: docker.io/jenkins/jenkins:2.568.3-jdk21
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${JENKINS_PORT_HOST:-8082}:8080"
+      - "127.0.0.1:${JENKINS_AGENT_PORT_HOST:-50001}:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+
+  # Non-daemon jobs are explicitly opt-in; not part of default `up`.
+  train:
+    profiles: [jobs]
+    build:
+      context: .
+      dockerfile: Dockerfile.train
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11}
+        UV_TOOL_IMAGE: ${UV_TOOL_IMAGE:-ghcr.io/astral-sh/uv:python3.10-alpine}
+    image: sentinel-train:compose-candidate
+    environment:
+      <<: *postgres-env
+      CLEARML_API_HOST: http://clearml-apiserver:8008
+      CLEARML_WEB_HOST: http://clearml-webserver:80
+      CLEARML_FILES_HOST: http://clearml-fileserver:8081
+      CLEARML_API_ACCESS_KEY: ${CLEARML_API_ACCESS_KEY:?Set CLEARML_API_ACCESS_KEY in environment}
+      CLEARML_API_SECRET_KEY: ${CLEARML_API_SECRET_KEY:?Set CLEARML_API_SECRET_KEY in environment}
+    depends_on:
+      - postgres
+      - clearml-apiserver
+
+  validator:
+    profiles: [jobs]
+    build:
+      context: .
+      dockerfile: Dockerfile.validator
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11}
+        UV_TOOL_IMAGE: ${UV_TOOL_IMAGE:-ghcr.io/astral-sh/uv:python3.10-alpine}
+    image: sentinel-validator:compose-candidate
+    environment:
+      <<: *postgres-env
+    depends_on:
+      - postgres
+
+volumes:
+  clearml_redis_data:
+  clearml_mongo_db:
+  clearml_mongo_configdb:
+  clearml_elastic_data:
+  clearml_elastic_logs:
+  clearml_fileserver_data:
+  clearml_config:
+  clearml_logs:
+  jenkins_home:
+  rabbitmq_data:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
+  loki_data:

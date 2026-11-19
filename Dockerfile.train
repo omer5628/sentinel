@@ -1,9 +1,7 @@
-ARG PYTHON_BASE_IMAGE=python:3.11
-ARG UV_TOOL_IMAGE=ghcr.io/astral-sh/uv:python3.10-alpine
 
-FROM ${UV_TOOL_IMAGE} AS uv-source
+FROM ghcr.io/astral-sh/uv:latest AS uv-source
 
-FROM ${PYTHON_BASE_IMAGE}
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -15,7 +13,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY --from=uv-source /usr/local/bin/uv /usr/local/bin/uvx /bin/
+COPY --from=uv-source /uv /uvx /bin/
+
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
 
@@ -25,6 +27,8 @@ RUN uv sync \
     --no-install-project \
     --no-cache
 
+# Install the same ClearML Serving CLI version used during local verification.
+# Keep CLI dependencies isolated from the locked training environment.
 RUN uv tool install \
     --python /usr/local/bin/python \
     --no-cache \
@@ -33,29 +37,16 @@ RUN uv tool install \
 COPY src/ ./src/
 COPY conf/ ./conf/
 
+# The promotion Job reuses this immutable training image.
+# Copy only the promotion tools and model-specific preprocessing templates.
 COPY scripts/register_serving_candidate.py \
      scripts/promote_serving_canary.py \
      scripts/render_serving_preprocess.py \
      ./scripts/
-
 COPY serving/preprocess/ ./serving/preprocess/
 COPY scripts/verify_serving_inference.py ./scripts/
 
 COPY data/golden_set.csv ./data/golden_set.csv
 COPY data/golden_set_manifest.json ./data/golden_set_manifest.json
-
-# Training has one stage. Remove packages only after dependency installation.
-RUN apt-get purge -y \
-      libmariadb-dev \
-      libmariadb-dev-compat \
-      libopenexr-dev \
-      libxml2-dev \
-      linux-libc-dev \
-      libmariadb3 \
-      mariadb-common \
-      libopenexr-3-1-30 \
-      libxml2 \
-      openssh-client \
-    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 ENTRYPOINT ["python", "-m", "sentinel.train"]
